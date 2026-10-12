@@ -1,12 +1,13 @@
 # CATCCOS 算子总览
 
-本文档列出 CATCCOS 当前提供的全部可编译运行算子样例，按通信/计算模式分为 6 类。每个算子的 Kernel 模板位于 `include/catccos/`，可运行样例位于 `examples/`。
+本文档列出 CATCCOS 当前提供的 C++ 算子样例，按通信/计算模式分为 6 类，并单列 PyTorch binding。Kernel 模板位于 `include/catccos/`，样例位于 `examples/`。
 
 > **说明**
 >
 > - `aux_ops/`（MoE routing、token unpermute 等）为组合算子内部组件，不单独列入下表，详见 [实现模式 - MoE](operators/implementation_patterns.md#5-moe--groupedmatmul--alltoallv)。
 > - 标注 * 的示例暂无独立 README，示例列链接至目录，实现细节见 [实现模式文档](operators/implementation_patterns.md)。
 > - `allgather_matmul_rdma` 仅在编译时开启 `RDMA_TRANSPORT` 选项时构建。
+> - optional backend 的 HCCL 变体使用各自目录中的构建脚本；SHMEM 变体由顶层 CMake 注册，其中 Ascend950 变体仅在 A5 架构构建。PyTorch binding 需开启 `CATCCOS_TORCH_EXTENSION`。
 > - **硬件平台**：`Atlas A2/A3` 表示同时支持 Atlas A2 与 Atlas A3；`Atlas 350` 表示仅支持 Atlas 350 平台。示例目录仍保留 `ascend950_*` 前缀，与代码仓库命名一致。
 
 ---
@@ -23,6 +24,11 @@
 | AllGather + MatMul（输出 Gather 结果） | `AllGatherMatmulWithGatherResult` | AllGather | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_with_gather_result.hpp` | [allgather_matmul_with_gather_result](../examples/allgather_matmul_with_gather_result/README.md) |
 | AllGather + MatMul（Remote Read） | `AllGatherMatmulRemoteRead` | AllGather（Remote Read） | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_with_remote_read.hpp` | [allgather_matmul_remote_read](../examples/allgather_matmul_remote_read/README.md) |
 | AllGather + MatMul（RDMA Write） | `AllGatherMatmulRdma` | AllGather（RDMA） | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_with_rdma_write.hpp` | [allgather_matmul_rdma](../examples/allgather_matmul_rdma/README.md) |
+| AllGather + MatMul（浅融合） | `AllGatherMatmulShallowFusion` | AllGather | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_shallow_fusion.hpp` | [allgather_matmul_shallow_fusion](../examples/allgather_matmul_shallow_fusion/main.cpp) |
+| MatMul + AllReduce（浅融合） | `MatmulAllReduceShallowFusion` | AllReduce | FP16 | Atlas A2/A3 | `dgemm/kernel/matmul_allreduce_shallow_fusion.hpp` | [matmul_allreduce_shallow_fusion](../examples/matmul_allreduce_shallow_fusion/main.cpp) |
+| MatMul + ReduceScatter（浅融合） | `MatmulReduceScatterShallowFusion` | ReduceScatter | FP16 | Atlas A2/A3 | `dgemm/kernel/matmul_reduce_scatter_shallow_fusion.hpp` | [matmul_reduce_scatter_shallow_fusion](../examples/matmul_reduce_scatter_shallow_fusion/main.cpp) |
+| AllGather + MatMul（SHMEM 后端） | `AllGatherMatmul` | AllGather | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_with_local_optional_backend.hpp` | [allgather_matmul_shmem](../examples/allgather_matmul_optional_backend/allgather_matmul_shmem/main.cpp) |
+| AllGather + MatMul（HCCL 后端） | `AllGatherMatmulHccl` | AllGather | FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_with_local_optional_backend.hpp` | [allgather_matmul_hccl](../examples/allgather_matmul_optional_backend/allgather_matmul_hccl/main.cpp) |
 
 ---
 
@@ -35,6 +41,7 @@
 | AllGather + MatMul + Dequant | `AllGatherMatmulDequant` | AllGather | INT8 → FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_dequant.hpp` | [allgather_matmul_dequant](../examples/allgather_matmul_dequant/main.cpp)* |
 | AllGather + MatMul + Dequant + Bias | `AllGatherMatmulDequantBias` | AllGather | INT8 → FP16 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_dequant_bias.hpp` | [allgather_matmul_dequant_bias](../examples/allgather_matmul_dequant_bias/README.md) |
 | MatMul + Dequant + ReduceScatter Write | `MatmulDequantReduceScatterWrite` | ReduceScatter | INT8 → FP16 | Atlas A2/A3 | `dgemm/kernel/matmul_dequant_reduce_scatter_write.hpp` | [matmul_dequant_reduce_scatter_write](../examples/matmul_dequant_reduce_scatter_write/main.cpp)* |
+| AllGather + MatMul（W4A4） | `AllGatherMatmulW4A4` | AllGather | W4A4 | Atlas A2/A3 | `dgemm/kernel/allgather_matmul_w4a4.hpp` | [allgather_matmul_w4a4](../examples/allgather_matmul_w4a4/main.cpp) |
 
 ---
 
@@ -53,6 +60,7 @@
 | MoE Dispatch GMM + Dequant + SwiGLU | `DispatchGmmDequantSwiglu` | AllToAllV | INT8 → FP16 | Atlas A2/A3 | `dgemm/kernel/alltoallv_gmm_dequant_v2.hpp` | [dispatch_gmm_dequant_swiglu](../examples/dispatch_gmm_dequant_swiglu/main.cpp)* |
 | GMM + AllToAllV v2 | `GMMAllToAllVV2` | AllToAllV | FP16 | Atlas A2/A3 | `dgemm/kernel/gmm_alltoallv_v2.hpp` | [gmm_alltoallv_v2](../examples/gmm_alltoallv_v2/README.md) |
 | MoE FFN Dispatch + Combine | `DispatchFFNCombine` | AllToAllV | FP16 | Atlas A2/A3 | `alltoallv_gmm_v2.hpp` + `gmm_alltoallv_v2.hpp` | [dispatch_ffn_combine](../examples/dispatch_ffn_combine/README.md) |
+| GroupedMatMul + AllToAllV（Small M） | `GroupedMatmulAllToAllvSmallM` | AllToAllV | FP16 | Atlas A2/A3 | `dgemm/kernel/grouped_matmul_alltoallv_small_m.hpp` | [grouped_matmul_alltoallv_small_m](../examples/grouped_matmul_alltoallv_small_m/main.cpp) |
 
 > `AllToAllVGMMV2` 被 `alltoallv_gmm_v2`、`dispatch_gmm`、`dispatch_gmm_swiglu` 三个示例共用 Registry 名，但 Device 实现不同（是否含 SwiGLU 等）。
 
@@ -70,6 +78,11 @@
 | MatMul + AllToAll | `Ascend950MatmulAllToAll` | AllToAll | FP16 | Atlas 350 | `dgemm/kernel/ascend950_matmul_alltoall.hpp` | [ascend950_matmul_alltoall](../examples/ascend950_matmul_alltoall/README.md) |
 | GroupedMatMul + AllToAllV | `Ascend950GroupedMatmulAllToAllV` | AllToAllV | FP16 | Atlas 350 | `dgemm/kernel/grouped_matmul_alltoallv_tla.hpp` | [ascend950_grouped_matmul_alltoallv](../examples/ascend950_grouped_matmul_alltoallv/README.md) |
 | MX-FP8 MatMul + ReduceScatter | `Ascend950MxFp8MatmulReduceScatter` | ReduceScatter | MX-FP8 | Atlas 350 | `dgemm/kernel/matmul_reduce_scatter_mx_tla.hpp` | [ascend950_mxfp8_matmul_reduce_scatter](../examples/ascend950_mxfp8_matmul_reduce_scatter/README.md) |
+| AllToAllV + GroupedMatMul | `Ascend950AllToAllVGroupedMatmul` | AllToAllV | FP16 | Atlas 350 | `dgemm/kernel/ascend950_alltoallv_grouped_matmul.hpp` | [ascend950_alltoallv_grouped_matmul](../examples/ascend950_alltoallv_grouped_matmul/main.cpp) |
+| AllGather + MatMul（UDMA） | `Ascend950AllGatherMatmulUdma` | AllGather | FP16 | Atlas 350 | `dgemm/kernel/ascend950_allgather_matmul_with_udma.hpp` | [ascend950_allgather_matmul_udma](../examples/ascend950_allgather_matmul_udma/main.cpp) |
+| MoE FFN Dispatch + Combine | `Ascend950DispatchFFNCombine` | AllToAllV | BF16 / MX-FP8 | Atlas 350 | `dgemm/kernel/ascend950_alltoall_gmm.hpp` + `ascend950_gmm_alltoall.hpp` | [ascend950_dispatch_ffn_combine](../examples/ascend950_dispatch_ffn_combine/main.cpp) |
+| AllGather + MatMul（SHMEM 后端） | `Ascend950AllGatherMatmulShmem` | AllGather | FP16 | Atlas 350 | `dgemm/kernel/ascend950_allgather_matmul_with_local_optional_backend.hpp` | [ascend950_allgather_matmul_shmem](../examples/allgather_matmul_optional_backend/ascend950_allgather_matmul_shmem/main.cpp) |
+| AllGather + MatMul（HCCL 后端） | `AllGatherMatmulHccl` | AllGather | FP16 | Atlas 350 | `dgemm/kernel/ascend950_allgather_matmul_with_local_optional_backend.hpp` | [ascend950_allgather_matmul_hccl](../examples/allgather_matmul_optional_backend/ascend950_allgather_matmul_hccl/main.cpp) |
 
 ---
 
@@ -83,6 +96,11 @@ Atlas 350 平台上的 MX 格式（FP8/FP4）量化融合算子。
 | MX-FP4 AllGather + MatMul | `Ascend950Fp4MxAllGatherMatmul` | AllGather | MX-FP4 | Atlas 350 | `dgemm/kernel/mx_allgather_matmul.hpp` | [ascend950_fp4_mx_allgather_matmul](../examples/ascend950_fp4_mx_allgather_matmul/README.md) |
 | MX-FP8 GroupedMatMul + AllToAllV | `Ascend950Fp8MxGroupedMatmulAllToAllV` | AllToAllV | MX-FP8 | Atlas 350 | `dgemm/kernel/grouped_matmul_alltoallv_mx.hpp` | [ascend950_fp8_mx_grouped_matmul_alltoallv](../examples/ascend950_fp8_mx_grouped_matmul_alltoallv/README.md) |
 | MX-FP4 GroupedMatMul + AllToAllV | `Ascend950Fp4MxGroupedMatmulAllToAllV` | AllToAllV | MX-FP4 | Atlas 350 | `dgemm/kernel/grouped_matmul_alltoallv_mx.hpp` | [ascend950_fp4_mx_grouped_matmul_alltoallv](../examples/ascend950_fp4_mx_grouped_matmul_alltoallv/README.md) |
+| MX-FP8 MatMul + AllToAll | `Ascend950MxFp8MatmulAllToAll` | AllToAll | MX-FP8 | Atlas 350 | `dgemm/kernel/ascend950_matmul_alltoall_mx_slice_n.hpp` | [ascend950_mxfp8_matmul_alltoall](../examples/ascend950_mxfp8_matmul_alltoall/main.cpp) |
+| MX-FP8 AllToAll + MatMul（Split K） | `Ascend950MxFp8AllToAllMatmulSplitKUrma` | AllToAll | MX-FP8 | Atlas 350 | `dgemm/kernel/ascend950_alltoall_matmul_split_k_urma.hpp` | [ascend950_mxfp8_alltoall_matmul_split_k_urma](../examples/ascend950_mxfp8_alltoall_matmul_split_k_urma/main.cpp) |
+| MX-FP4 MatMul + ReduceScatter | `Ascend950Fp4MxMatmulReduceScatter` | ReduceScatter | MX-FP4 | Atlas 350 | `dgemm/kernel/matmul_reduce_scatter_mx_tla.hpp` | [ascend950_fp4_mx_matmul_reduce_scatter](../examples/ascend950_fp4_mx_matmul_reduce_scatter/main.cpp) |
+| MX-FP8 AllToAllV + GroupedMatMul | `Ascend950Fp8MxAllToAllVGroupedMatmul` | AllToAllV | MX-FP8 | Atlas 350 | `dgemm/kernel/mx_alltoallv_group_matmul.hpp` | [ascend950_fp8_mx_alltoallv_grouped_matmul](../examples/ascend950_fp8_mx_alltoallv_grouped_matmul/main.cpp) |
+| MX-FP4 AllToAllV + GroupedMatMul | `Ascend950Fp4MxAllToAllVGroupedMatmul` | AllToAllV | MX-FP4 | Atlas 350 | `dgemm/kernel/mx_alltoallv_group_matmul.hpp` | [ascend950_fp4_mx_alltoallv_grouped_matmul](../examples/ascend950_fp4_mx_alltoallv_grouped_matmul/main.cpp) |
 
 ---
 
@@ -100,14 +118,18 @@ Atlas 350 平台上的 MX 格式（FP8/FP4）量化融合算子。
 
 ## 统计
 
+PyTorch binding 复用 `AllGatherMatmul` 算子和 `dgemm/kernel/allgather_matmul.hpp`，使用 `CATCCOS_TORCH_EXTENSION` 构建，入口见 [torch_binding](../examples/torch_binding/CMakeLists.txt)。
+
 | 类别 | 算子数量 |
 |------|---------|
-| MatMul + 集合通信 | 6 |
-| 量化 AllGather-MatMul / MatMul-RS | 3 |
-| MoE / GroupedMatMul + AllToAllV | 9 |
-| Atlas 350 通用融合 | 6 |
-| Atlas 350 MX 量化 | 4 |
+| MatMul + 集合通信 | 11 |
+| 量化 AllGather-MatMul / MatMul-RS | 4 |
+| MoE / GroupedMatMul + AllToAllV | 10 |
+| Atlas 350 通用融合 | 11 |
+| Atlas 350 MX 量化 | 9 |
 | 纯通信 / 量化通信 | 3 |
-| **合计** | **31**（+ `allgather_matmul_rdma` 条件构建） |
+| **C++ 样例合计** | **48**（含条件构建的 RDMA 和独立构建的 HCCL 变体） |
+| PyTorch binding | 1（条件构建） |
+| **样例入口总计** | **49** |
 
 实现模式说明见 [operators/implementation_patterns.md](operators/implementation_patterns.md)。

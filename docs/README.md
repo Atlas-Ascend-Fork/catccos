@@ -67,7 +67,7 @@ include/catccos/
 
 | 目录 | 说明 |
 |------|------|
-| [examples/](../examples/CMakeLists.txt) | 可编译运行的算子样例（31 个 + 1 个 RDMA 条件算子） |
+| [examples/](../examples/CMakeLists.txt) | 48 个 C++ 算子样例入口（含条件构建的 RDMA、独立构建的 HCCL 变体）和 1 个条件构建的 PyTorch binding，详见[算子总览](operators.md) |
 | [include/catccos/](../include/catccos/catccos.hpp) | 模板头文件（header-only 库） |
 | [utils/](../utils/info.h) | 共享 Host 代码（算子注册、SHMEM 初始化等） |
 | [tools/](../tools/README.md) | AscendTimer 性能采集工具 |
