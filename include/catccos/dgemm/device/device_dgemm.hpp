@@ -78,7 +78,10 @@ public:
         mkdir(data_dir.c_str(), 0777);
         std::string raw_csv_path = data_dir + "/timer_rank_" + std::to_string(rankId) + "_timeline.csv";
         std::string dur_csv_path = out_dir + "/timer_rank_" + std::to_string(rankId) + ".csv";
-        AscendTimerHost::WriteAllTimerResults(raw_csv_path, dur_csv_path, time_result);
+        if (!AscendTimerHost::WriteAllTimerResults(raw_csv_path, dur_csv_path, time_result)) {
+            fprintf(stderr, "[Timer] CSV export failed\n");
+            return;
+        }
         fprintf(stderr, "[Timer] Raw CSV: %s\n", raw_csv_path.c_str());
         fprintf(stderr, "[Timer] Duration CSV: %s\n", dur_csv_path.c_str());
 #endif

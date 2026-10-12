@@ -156,6 +156,17 @@ public:
         std::vector<bool> isAccumulate;            // 新增：记录该类型是否为累加模式
     };
 
+    inline static bool IsComplete(const TimerResult& result)
+    {
+        return result.coreCount > 0 && result.timingCounterSize > 0 && result.dynamicIterTotalSize >= 0 &&
+               result.timingCounterSize == result.coreCount * AscendTimer::N_TIMING_COUNTER_PER_CORE_ALIGN &&
+               result.dynamicIterTotalSize == result.coreCount * AscendTimer::DYNAMIC_ITER_PER_CORE_ALIGN &&
+               result.baseCycleData.size() == static_cast<size_t>(result.timingCounterSize) &&
+               result.dynamicActualIterPerCore.size() == static_cast<size_t>(result.dynamicIterTotalSize) &&
+               result.dynamicActualIterMax.size() == AscendTimer::DYNAMIC_TYPE_COUNT &&
+               result.isAccumulate.size() == AscendTimer::DYNAMIC_TYPE_COUNT;
+    }
+
     // ========== 5. 动态项索引计算 ==========
     static inline int GetDynamicTimingIdx(AscendTimer::DynamicTimingType type, int iter)
     {
@@ -268,6 +279,8 @@ public:
     // ========== 9. 写入原始时间戳数据（CSV格式，包含start/end cycle值）==========
     inline static bool WriteTimeResultsRaw(const std::string& filename, const TimerResult& timerResult)
     {
+        if (!IsComplete(timerResult))
+            return false;
         std::ofstream outfile(filename);
         if (!outfile.is_open())
             return false;
@@ -353,6 +366,8 @@ public:
     // ========== 10. 写入Duration数据 ==========
     inline static bool WriteTimeResultsDuration(const std::string& filename, const TimerResult& timerResult)
     {
+        if (!IsComplete(timerResult))
+            return false;
         std::ofstream outfile(filename);
         if (!outfile.is_open())
             return false;
@@ -436,6 +451,10 @@ public:
     inline static bool WriteAllTimerResults(
         const std::string& rawFilename, const std::string& durationFilename, const TimerResult& timerResult)
     {
+        if (!IsComplete(timerResult)) {
+            std::cerr << "Incomplete timer result; CSV export skipped" << std::endl;
+            return false;
+        }
         bool rawOk = WriteTimeResultsRaw(rawFilename, timerResult);
         bool durOk = WriteTimeResultsDuration(durationFilename, timerResult);
         return rawOk && durOk;
