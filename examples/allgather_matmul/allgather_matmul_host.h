@@ -12,6 +12,9 @@
 #ifndef ALLGATHER_MATMUL_HOST_H
 #define ALLGATHER_MATMUL_HOST_H
 
+#include <memory>
+#include <stdexcept>
+
 #include "operator_registry.h"
 #include "padding.h"
 
@@ -42,39 +45,61 @@ public:
         size_t bSize = static_cast<size_t>(cocTiling.k) * cocTiling.n * sizeof(fp16_t);
         size_t cSize = static_cast<size_t>(cocTiling.m) * cocTiling.rankSize * cocTiling.n * sizeof(fp16_t);
 
-        uint8_t* aDevice;
-        ACL_CHECK(aclrtMalloc((void**)(&aDevice), aSize, ACL_MEM_MALLOC_HUGE_FIRST));
-        uint8_t* aHost;
+        auto deviceDeleter = [](uint8_t* ptr) {
+            if (ptr != nullptr)
+                ACL_CHECK(aclrtFree(ptr));
+        };
+        auto hostDeleter = [](uint8_t* ptr) {
+            if (ptr != nullptr)
+                ACL_CHECK(aclrtFreeHost(ptr));
+        };
+        using DevicePtr = std::unique_ptr<uint8_t, decltype(deviceDeleter)>;
+        using HostPtr = std::unique_ptr<uint8_t, decltype(hostDeleter)>;
+        auto allocateDevice = [&](size_t bytes) {
+            uint8_t* ptr = nullptr;
+            aclError status = aclrtMalloc(reinterpret_cast<void**>(&ptr), bytes, ACL_MEM_MALLOC_HUGE_FIRST);
+            if (status != ACL_SUCCESS || ptr == nullptr)
+                throw std::runtime_error("AllGatherMatmul device allocation failed");
+            return DevicePtr(ptr, deviceDeleter);
+        };
+        auto allocateHost = [&](size_t bytes) {
+            uint8_t* ptr = nullptr;
+            aclError status = aclrtMallocHost(reinterpret_cast<void**>(&ptr), bytes);
+            if (status != ACL_SUCCESS || ptr == nullptr)
+                throw std::runtime_error("AllGatherMatmul pinned host allocation failed");
+            return HostPtr(ptr, hostDeleter);
+        };
+        auto copyToDevice = [](uint8_t* dst, size_t size, const void* src) {
+            if (aclrtMemcpy(dst, size, src, size, ACL_MEMCPY_HOST_TO_DEVICE) != ACL_SUCCESS)
+                throw std::runtime_error("AllGatherMatmul host-to-device copy failed");
+        };
+
+        auto aDevice = allocateDevice(aSize);
         if (dataFile != "") {
-            ACL_CHECK(aclrtMallocHost((void**)(&aHost), aSize));
-            ReadFileOrThrow(dataFile + "/rank_" + std::to_string(rankId) + "_a.bin", aHost, aSize);
-            ACL_CHECK(aclrtMemcpy(aDevice, aSize, aHost, aSize, ACL_MEMCPY_HOST_TO_DEVICE));
+            auto aHost = allocateHost(aSize);
+            ReadFileOrThrow(dataFile + "/rank_" + std::to_string(rankId) + "_a.bin", aHost.get(), aSize);
+            copyToDevice(aDevice.get(), aSize, aHost.get());
         } else {
             std::vector<fp16_t> matrixA(static_cast<size_t>(cocTiling.m) * cocTiling.k, 1);
-            ACL_CHECK(aclrtMemcpy(aDevice, aSize, matrixA.data(), aSize, ACL_MEMCPY_HOST_TO_DEVICE));
+            copyToDevice(aDevice.get(), aSize, matrixA.data());
         }
 
-        uint8_t* bDevice;
-        ACL_CHECK(aclrtMalloc((void**)(&bDevice), bSize, ACL_MEM_MALLOC_HUGE_FIRST));
-        uint8_t* bHost;
+        auto bDevice = allocateDevice(bSize);
         if (dataFile != "") {
-            ACL_CHECK(aclrtMallocHost((void**)(&bHost), bSize));
-            ReadFileOrThrow(dataFile + "/rank_" + std::to_string(rankId) + "_b.bin", bHost, bSize);
-            ACL_CHECK(aclrtMemcpy(bDevice, bSize, bHost, bSize, ACL_MEMCPY_HOST_TO_DEVICE));
+            auto bHost = allocateHost(bSize);
+            ReadFileOrThrow(dataFile + "/rank_" + std::to_string(rankId) + "_b.bin", bHost.get(), bSize);
+            copyToDevice(bDevice.get(), bSize, bHost.get());
         } else {
             std::vector<fp16_t> matrixB(static_cast<size_t>(cocTiling.k) * cocTiling.n, 1);
-            ACL_CHECK(aclrtMemcpy(bDevice, bSize, matrixB.data(), bSize, ACL_MEMCPY_HOST_TO_DEVICE));
+            copyToDevice(bDevice.get(), bSize, matrixB.data());
         }
 
-        uint8_t* cDevice;
-        ACL_CHECK(aclrtMalloc((void**)(&cDevice), cSize, ACL_MEM_MALLOC_HUGE_FIRST));
+        auto cDevice = allocateDevice(cSize);
 
-        params.SetKernelParams(aDevice, bDevice, cDevice);
-
-        if (dataFile != "") {
-            ACL_CHECK(aclrtFreeHost(aHost));
-            ACL_CHECK(aclrtFreeHost(bHost));
-        }
+        params.SetKernelParams(aDevice.get(), bDevice.get(), cDevice.get());
+        aDevice.release();
+        bDevice.release();
+        cDevice.release();
 
         return;
     }
