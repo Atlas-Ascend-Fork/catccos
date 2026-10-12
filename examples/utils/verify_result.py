@@ -181,6 +181,10 @@ def show_random_samples_double_fp16(t_fp16_0, t_fp16_1, t_fp32, num_samples=100)
         )
 
 
+def count_nonfinite_mismatches(actual_output, golden_output):
+    return torch.count_nonzero(torch.isfinite(actual_output) != torch.isfinite(golden_output)).item()
+
+
 def cal_precision_eb_percent(op_type, i, actual_output, golden_output, precision_threshold, eb_threshold):
     actual_output = actual_output if actual_output.dtype != torch.bool else actual_output.long()
     golden_output = golden_output if golden_output.dtype != torch.bool else golden_output.long()
@@ -191,6 +195,10 @@ def cal_precision_eb_percent(op_type, i, actual_output, golden_output, precision
     ] and actual_output.dtype in [torch.float16, torch.bfloat16]:
         actual_output = actual_output.to(torch.float32)
         golden_output = golden_output.to(torch.float32)
+    mismatch_count = count_nonfinite_mismatches(actual_output, golden_output)
+    if mismatch_count:
+        print(f"non-finite mismatch num: {mismatch_count}")
+        return 0, 0
     # 对于输出中出现的NAN以及INF全部替换成0
     actual_output = torch.where(torch.isnan(actual_output), torch.full_like(actual_output, 0), actual_output)
     actual_output = torch.where(torch.isinf(actual_output), torch.full_like(actual_output, 0), actual_output)
@@ -241,6 +249,11 @@ def cal_double_precision_eb_percent(
     actual_output = actual_output.to(torch.float32)
     golden_output = golden_output.to(torch.float32)
     golden_low_output = golden_low_output.to(torch.float32)
+
+    mismatch_count = count_nonfinite_mismatches(actual_output, golden_output)
+    if mismatch_count:
+        print(f"non-finite mismatch num: {mismatch_count}")
+        return float("inf"), float("inf"), float("inf"), 0
 
     actual_output = torch.where(torch.isnan(actual_output), torch.full_like(actual_output, 0), actual_output)
     actual_output = torch.where(torch.isinf(actual_output), torch.full_like(actual_output, 0), actual_output)
