@@ -114,8 +114,16 @@ inline bool WriteFile(const std::string& filePath, const void* buffer, size_t si
     }
 
     // write data
-    if (write(fd, static_cast<const char*>(buffer), size) != static_cast<ssize_t>(size)) {
-        std::cerr << "Failed to write to file: " << strerror(errno) << std::endl;
+    ssize_t written = write(fd, static_cast<const char*>(buffer), size);
+    if (written != static_cast<ssize_t>(size)) {
+        if (written < 0) {
+            std::cerr << "Failed to write to file: " << strerror(errno) << std::endl;
+        } else {
+            std::cerr << "Incomplete file write: " << written << " of " << size << " bytes" << std::endl;
+        }
+        flock(fd, LOCK_UN);
+        close(fd);
+        return false;
     }
 
     // unlock
