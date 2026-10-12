@@ -328,7 +328,7 @@ CATLASS_DEVICE void DispatchFFNCombineImpl(
     uint32_t rankSize = shmem_n_pes();
     uint32_t maxOutputSize = problemShape.m() * rankSize;
 
-    int32_t syncInterval = expertPerRank - 1;
+    int32_t syncInterval = expertPerRank > 1 ? expertPerRank - 1 : 1;
 
     // Workspace layout inside ptrWorkspace:
     //   [0, maxOutputSize * K): AllToAllV_GMM temp input

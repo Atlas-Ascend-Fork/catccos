@@ -175,7 +175,7 @@ CATLASS_DEVICE void AllToAllVGmmDequantSwigluImpl(
     MatmulKernel mmKernel;
     AicFinishSync aicFinishSync{&mmKernel};
     AivWaitSync aivWaitSync{&mmKernel};
-    int32_t syncInterval = expertPerRank - 1;
+    int32_t syncInterval = expertPerRank > 1 ? expertPerRank - 1 : 1;
 
     typename MatmulKernel::Params params{
         problemShape,

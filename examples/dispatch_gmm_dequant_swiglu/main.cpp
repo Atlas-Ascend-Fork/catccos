@@ -169,7 +169,7 @@ int main(int argc, char** argv)
         uint8_t* tokensPerExpertDevice = symmetricPtr + SHMEM_BUFF_BYTES - 2 * 1024 * 1024UL;
         uint8_t* tokensPerExpertHost;
         int32_t size = cocTiling.epSize * cocTiling.epSize * expertPerRank;
-        ACL_CHECK(aclrtMallocHost((void**)(&tokensPerExpertHost), size));
+        ACL_CHECK(aclrtMallocHost((void**)(&tokensPerExpertHost), size * sizeof(int32_t)));
         ACL_CHECK(aclrtMemcpy(
             tokensPerExpertHost, size * sizeof(int32_t), tokensPerExpertDevice, size * sizeof(int32_t),
             ACL_MEMCPY_DEVICE_TO_HOST));

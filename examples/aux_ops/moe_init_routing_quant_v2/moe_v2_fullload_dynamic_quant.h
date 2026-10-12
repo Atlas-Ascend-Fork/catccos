@@ -260,6 +260,9 @@ __aicore__ inline void MoeV2FullLoadDynamicQuant<T>::Compute(LocalTensor<float>&
     Div(tempLocal, inLocal, tempLocal, this->cols_);
     pipe_barrier(PIPE_V);
 
+    // Round to integer while still in FP32 to avoid changing rounding boundaries in FP16.
+    Cast(tempLocal, tempLocal, RoundMode::CAST_RINT, this->cols_);
+    pipe_barrier(PIPE_V);
     Cast(tempLocal.ReinterpretCast<half>(), tempLocal, RoundMode::CAST_TRUNC, this->cols_);
     pipe_barrier(PIPE_V);
 

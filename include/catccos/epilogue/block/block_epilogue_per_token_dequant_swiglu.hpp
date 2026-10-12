@@ -323,6 +323,7 @@ public:
             AscendC::SetFlag<AscendC::HardEvent::S_V>(0);
             AscendC::WaitFlag<AscendC::HardEvent::S_V>(0);
 
+            AscendC::PipeBarrier<PIPE_V>();
             AscendC::Muls(ubCFp32, ubCFp32, perTokenScale, actualTileCount);
             AscendC::PipeBarrier<PIPE_V>();
 

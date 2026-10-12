@@ -126,7 +126,7 @@ CATLASS_DEVICE void GMMAllToAllVImpl(
 
     MatmulKernel mmKernel;
     EmptyCallBack emptyCallBack{&mmKernel};
-    int32_t syncInterval = expertPerRank - 1;
+    int32_t syncInterval = expertPerRank > 1 ? expertPerRank - 1 : 1;
 
     typename MatmulKernel::Params params{problemShape,     rankSize,
                                          expertPerRank,    maxOutputSize,
