@@ -74,6 +74,20 @@ fi
 cd ${PROJECT_ROOT}/tests/dynamic_tiling/
 EXEC_BIN=${PROJECT_ROOT}/build/bin/dynamic_tiling
 
+verify_rank_processes() {
+    local failed=0 index status
+    for index in "${!verify_pids[@]}"; do
+        if wait "${verify_pids[$index]}"; then
+            continue
+        else
+            status=$?
+            echo "[ERROR] Precision verification failed for rank ${verify_ranks[$index]} (exit code ${status})." >&2
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
 if [ "$TEST_START_LINE" = "0" ]; then
     rm -rf output
     mkdir -p output
@@ -162,24 +176,42 @@ if [ "$TEST_TYPE" = "0" ]; then
             # Gathered A has shape [RANK_SIZE * M, K], so verify it with K as the row width.
             python3 ${UTILS_PATH}/verify_result.py ./output/output_gather_a.bin ./output/gather_a.bin ${DATA_TYPE} ${M} ${K} ${K}
         elif [ "$KERNEL_NAME" = "agmmdq" -o "$KERNEL_NAME" = "agmmdqbs" ]; then
+            verify_pids=()
+            verify_ranks=()
             for (( idx = 0; idx < ${RANK_SIZE}; idx = idx + 1)); do
                 python3 ${UTILS_PATH}/verify_result.py ./output/output_rank${idx}.bin ./output/golden_rank${idx}.bin 1 ${M} ${N} ${K} &
+                verify_pids+=("$!")
+                verify_ranks+=("${idx}")
             done
-            wait
+            if ! verify_rank_processes; then
+                exit 1
+            fi
         elif [ "$KERNEL_NAME" = "mmdqrs" ]; then
             python3 ${UTILS_PATH}/verify_result.py ./output/output.bin ./output/golden_fp32.bin 1 ${M} ${N} ${K} --golden_low=./output/golden_aclnn.bin
         elif [ "$KERNEL_NAME" = "atagmm" -o "$KERNEL_NAME" = "gmmata" -o "$KERNEL_NAME" = "atavgmm" -o "$KERNEL_NAME" = "atavgmmv2" -o "$KERNEL_NAME" = "a5atavgmm" \
             -o "$KERNEL_NAME" = "a5fp8mxagmm" -o "$KERNEL_NAME" = "a5fp4mxagmm" -o "$KERNEL_NAME" = "a5fp8mxatavgmm" -o "$KERNEL_NAME" = "a5fp4mxatavgmm" \
             -o "$KERNEL_NAME" = "a5gmmata" -o "$KERNEL_NAME" = "a5fp8gmmata" -o "$KERNEL_NAME" = "a5fp4gmmata" -o "$KERNEL_NAME" = "a5agmmudma" ]; then
+            verify_pids=()
+            verify_ranks=()
             for (( idx = 0; idx < ${RANK_SIZE}; idx = idx + 1)); do
                 python3 ${UTILS_PATH}/verify_result.py ./output/output_${idx}.bin ./output/golden_${idx}.bin ${DATA_TYPE} ${M} ${N} ${K} &
+                verify_pids+=("$!")
+                verify_ranks+=("${idx}")
             done
-            wait
+            if ! verify_rank_processes; then
+                exit 1
+            fi
         elif [ "$KERNEL_NAME" = "a5mxfp8atammsplitkurma" ]; then
+            verify_pids=()
+            verify_ranks=()
             for (( idx = 0; idx < ${RANK_SIZE}; idx = idx + 1)); do
                 python3 ${UTILS_PATH}/verify_result.py ./output/output_${idx}.bin ./output/golden_${idx}.bin ${DATA_TYPE} $((M / RANK_SIZE)) ${N} $((K * RANK_SIZE)) &
+                verify_pids+=("$!")
+                verify_ranks+=("${idx}")
             done
-            wait
+            if ! verify_rank_processes; then
+                exit 1
+            fi
         else
             python3 ${UTILS_PATH}/verify_result.py ./output/output.bin ./output/golden.bin ${DATA_TYPE} ${M} ${N} $((K * RANK_SIZE))
         fi
