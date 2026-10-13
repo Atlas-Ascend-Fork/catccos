@@ -13,7 +13,6 @@
 #     that directory to rebuild SHMEM with different options (e.g. switch soc type).
 ORIGINAL_DIR=$(pwd)
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
-trap 'cd "$ORIGINAL_DIR"' EXIT
 
 usage() {
     cat <<'EOF'
@@ -38,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         -soc_type)
             if [[ -z "${2:-}" ]]; then
                 echo "[ERROR] -soc_type requires a value (e.g. Ascend950)."
+                cd "$ORIGINAL_DIR"
                 return 1 2>/dev/null || exit 1
             fi
             SHMEM_BUILD_ARGS+=(-soc_type "$2")
@@ -66,11 +66,13 @@ if [ -z "$ASCEND_HOME_PATH" ]; then
         ASCEND_PATH="/usr/local/Ascend/"
     else
         echo "[ERROR] Could not find ascend-toolkit in default path: /usr/local/Ascend/ascend-toolkit."
-        exit 1
+        cd "$ORIGINAL_DIR"
+        return 1 2>/dev/null || exit 1
     fi
     source "${ASCEND_PATH}/ascend-toolkit/set_env.sh" || {
         echo "[ERROR] Running set_env.sh in ${ASCEND_PATH}/ascend-toolkit failed."
-        exit 1
+        cd "$ORIGINAL_DIR"
+        return 1 2>/dev/null || exit 1
     }
 else
     echo "[INFO] ASCEND_HOME_PATH has already been set to: $ASCEND_HOME_PATH"
@@ -80,14 +82,16 @@ fi
 submodule_status=$(git submodule status 2>&1)
 if [ $? -ne 0 ]; then
     echo "[ERROR] Failed to check submodule status."
-    exit 1
+    cd "$ORIGINAL_DIR"
+    return 1 2>/dev/null || exit 1
 fi
 
 if echo "$submodule_status" | grep -q '^[-+]'; then
     echo "Initializing and updating submodules..."
     git submodule update --init --recursive || {
         echo "[ERROR] Running git submodule update --init --recursive failed."
-        exit 1
+        cd "$ORIGINAL_DIR"
+        return 1 2>/dev/null || exit 1
     }
 else
     echo "Submodules already initialized and up to date. Skipping."
@@ -108,7 +112,8 @@ if [ -z "$SHMEM_HOME_PATH" ]; then
     if [ ! -f "$SHMEM_INSTALL_PATH/set_env.sh" ] || [ ! -f "$SHMEM_HEADER_PATH" ]; then
         bash scripts/build.sh "${SHMEM_BUILD_ARGS[@]}" || {
             echo "[ERROR] Running build.sh in 3rdparty/shmem failed."
-            exit 1
+            cd "$ORIGINAL_DIR"
+            return 1 2>/dev/null || exit 1
         }
     elif [ ${#SHMEM_BUILD_ARGS[@]} -gt 0 ]; then
         echo "[WARN] SHMEM install already exists at: $SHMEM_PATH/install"
@@ -116,7 +121,8 @@ if [ -z "$SHMEM_HOME_PATH" ]; then
     fi
     source "${SHMEM_PATH}/install/set_env.sh" || {
         echo "[ERROR] Running set_env.sh in 3rdparty/shmem/install failed."
-        exit 1
+        cd "$ORIGINAL_DIR"
+        return 1 2>/dev/null || exit 1
     }
 else
     echo "[INFO] SHMEM_HOME_PATH has already been set to: $SHMEM_HOME_PATH"
@@ -124,7 +130,8 @@ fi
 
 if [ ! -f "${SHMEM_HOME_PATH}/shmem/include/shmem.h" ]; then
     echo "[ERROR] SHMEM installation is incomplete: ${SHMEM_HOME_PATH}/shmem/include/shmem.h not found."
-    exit 1
+    cd "$ORIGINAL_DIR"
+    return 1 2>/dev/null || exit 1
 fi
 
 echo "Environment setup completed!"
