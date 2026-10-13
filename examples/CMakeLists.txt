@@ -294,6 +294,7 @@ foreach(EXAMPLE
     ascend950_mxfp8_matmul_alltoall
     dispatch_ffn_combine
     ascend950_dispatch_ffn_combine
+    ascend950_dispatch
     ascend950_fp8_mx_allgather_matmul
     ascend950_fp4_mx_allgather_matmul
     ascend950_quant_alltoall

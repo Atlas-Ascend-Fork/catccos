@@ -82,6 +82,7 @@ enum CocCommType {
     MATMUL_ALLREDUCE_SHALLOW_FUSION,
     MATMUL_REDUCE_SCATTER_SHALLOW_FUSION,
     GROUPED_MATMUL_ALLTOALLV_SMALL_M,
+    ASCEND950_DISPATCH,
     TYPE_NUM,
     UNKNOWN
 };
@@ -239,6 +240,7 @@ const std::map<std::string, CocCommType> CommTypeMap = {
     {"a5fp4mmrs", CocCommType::ASCEND950_FP4_MX_MATMUL_REDUCE_SCATTER},
     {"moe", CocCommType::DISPATCH_FFN_COMBINE},
     {"a5moe", CocCommType::ASCEND950_DISPATCH_FFN_COMBINE},
+    {"a5dispatch", CocCommType::ASCEND950_DISPATCH},
     {"a5agmmudma", CocCommType::ASCEND950_ALLGATHER_MATMUL_UDMA},
     {"a5mxfp8atammsplitkurma", CocCommType::ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA},
     {"agmmsf", ALLGATHER_MATMUL_SHALLOW_FUSION},
@@ -294,6 +296,7 @@ const std::map<CocCommType, std::string> CommTypeOpNameMap = {
     {ASCEND950_DISPATCH_FFN_COMBINE, "Ascend950DispatchFFNCombine"},
     {ASCEND950_ALLGATHER_MATMUL_UDMA, "Ascend950AllGatherMatmulUdma"},
     {ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA, "Ascend950MxFp8AllToAllMatmulSplitKUrma"},
+    {ASCEND950_DISPATCH, "Ascend950Dispatch"},
 };
 
 inline int32_t CeilDev(int32_t num, int32_t div)
