@@ -134,6 +134,26 @@ struct KernelParams {
 
     KernelParams() : ptrA(nullptr), ptrB(nullptr), ptrC(nullptr), customPtrs(nullptr), customCount(0) {}
 
+    // The custom pointer array is owned by this object; copies would share its lifetime.
+    KernelParams(const KernelParams&) = delete;
+    KernelParams& operator=(const KernelParams&) = delete;
+
+    KernelParams(KernelParams&& other) noexcept
+        : ptrA(other.ptrA),
+          ptrB(other.ptrB),
+          ptrC(other.ptrC),
+          customPtrs(other.customPtrs),
+          customCount(other.customCount)
+    {
+        other.ptrA = nullptr;
+        other.ptrB = nullptr;
+        other.ptrC = nullptr;
+        other.customPtrs = nullptr;
+        other.customCount = 0;
+    }
+
+    KernelParams& operator=(KernelParams&&) = delete;
+
     template <typename... Args>
     void SetKernelParams(uint8_t* a, uint8_t* b, uint8_t* c, Args... args)
     {
@@ -142,11 +162,11 @@ struct KernelParams {
         ptrC = c;
 
         const int argsCount = sizeof...(args);
-        customCount = argsCount;
-
         if (customPtrs != nullptr) {
             ACL_CHECK(aclrtFreeHost(customPtrs));
+            customPtrs = nullptr;
         }
+        customCount = argsCount;
 
         if (argsCount > 0) {
             ACL_CHECK(aclrtMallocHost((void**)(&customPtrs), argsCount * sizeof(uint8_t*)));
