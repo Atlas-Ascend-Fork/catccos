@@ -13,6 +13,7 @@
 #define CATCCOS_DGEMM_DEVICE_DEVICE_DGEMM_HPP
 
 #include <cstddef>
+#include <utility>
 #include <acl/acl.h>
 #include "catlass/catlass.hpp"
 #include "catlass/status.hpp"
@@ -35,6 +36,31 @@ private:
 
 public:
     DeviceDGemm() {}
+    DeviceDGemm(const DeviceDGemm&) = delete;
+    DeviceDGemm& operator=(const DeviceDGemm&) = delete;
+    DeviceDGemm(DeviceDGemm&& other)
+        : params_(std::move(other.params_)), timerBuffer_(other.timerBuffer_), timerBufferSize_(other.timerBufferSize_)
+    {
+        other.timerBuffer_ = nullptr;
+        other.timerBufferSize_ = 0;
+    }
+    DeviceDGemm& operator=(DeviceDGemm&& other)
+    {
+        if (this != &other) {
+            if (timerBuffer_ != nullptr) {
+                aclrtFree(timerBuffer_);
+                timerBuffer_ = nullptr;
+                timerBufferSize_ = 0;
+            }
+            params_ = std::move(other.params_);
+            timerBuffer_ = other.timerBuffer_;
+            timerBufferSize_ = other.timerBufferSize_;
+            other.timerBuffer_ = nullptr;
+            other.timerBufferSize_ = 0;
+        }
+        return *this;
+    }
+
     ~DeviceDGemm()
     {
         if (timerBuffer_ != nullptr) {
