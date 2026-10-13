@@ -68,13 +68,17 @@ inline bool ReadFile(const std::string& filePath, void* buffer, size_t bufferSiz
         file.close();
         return false;
     }
-    if (size > bufferSize) {
-        ERROR_LOG("File size is larger than buffer size.");
+    if (size != bufferSize) {
+        ERROR_LOG("File size does not match buffer size.");
         file.close();
         return false;
     }
     buf->pubseekpos(0, std::ios::in);
-    buf->sgetn(static_cast<char*>(buffer), size);
+    if (buf->sgetn(static_cast<char*>(buffer), size) != static_cast<std::streamsize>(size)) {
+        ERROR_LOG("Failed to read the complete file.");
+        file.close();
+        return false;
+    }
     file.close();
     return true;
 }
