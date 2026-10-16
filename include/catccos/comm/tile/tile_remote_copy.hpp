@@ -416,11 +416,8 @@ struct TileRemoteCopy<
         AscendC::GlobalTensor<ElementSrc> const& srcTensor, LayoutDst const& srcLayout, MatrixCoord const& copyShape,
         AscendC::LocalTensor<ElementSrc> const& tmpUb, uint32_t copyEventId, uint32_t peerIdx)
     {
-        AscendC::TPipe pipe;
-        AscendC::TBuf<AscendC::TPosition::VECOUT> buf;
-        pipe.InitBuffer(buf, UDMA_WQE_SCRATCH_BYTES);
-        AscendC::LocalTensor<uint8_t> ubLocal = buf.GetWithOffset<uint8_t>(UDMA_WQE_SCRATCH_BYTES, 0);
-        constexpr uint32_t SYNC_ID = 0;
+        // The caller owns an aligned, exclusive 256-byte WQE region in tmpUb.
+        // The region must have no outstanding accesses when this call begins.
 
         uint32_t repeat = copyShape.row();
         uint32_t stride = srcLayout.stride(0);
@@ -428,8 +425,9 @@ struct TileRemoteCopy<
             repeat * stride * Catlass::SizeOfBits<ElementSrc>::value / Catlass::SizeOfBits<uint8_t>::value;
         aclshmemx_udma_get_nbi(
             (__gm__ uint8_t*)dstTensor.GetPhyAddr(), (__gm__ uint8_t*)srcTensor.GetPhyAddr(),
-            (__ubuf__ uint8_t*)ubLocal.GetPhyAddr(), messageLen, peerIdx, SYNC_ID);
+            (__ubuf__ uint8_t*)tmpUb.GetPhyAddr(), messageLen, peerIdx, copyEventId);
 
+        // PIPE_MTE3 has consumed tmpUb on return; quiet also completes the GM payload.
         aclshmemx_udma_quiet(peerIdx);
     }
 };
@@ -485,11 +483,8 @@ struct TileRemoteCopy<
         AscendC::GlobalTensor<ElementSrc> const& srcTensor, LayoutDst const& srcLayout, MatrixCoord const& copyShape,
         AscendC::LocalTensor<ElementSrc> const& tmpUb, uint32_t copyEventId, uint32_t peerIdx)
     {
-        AscendC::TPipe pipe;
-        AscendC::TBuf<AscendC::TPosition::VECOUT> buf;
-        pipe.InitBuffer(buf, UDMA_WQE_SCRATCH_BYTES);
-        AscendC::LocalTensor<uint8_t> ubLocal = buf.GetWithOffset<uint8_t>(UDMA_WQE_SCRATCH_BYTES, 0);
-        constexpr uint32_t SYNC_ID = 0;
+        // The caller owns an aligned, exclusive 256-byte WQE region in tmpUb.
+        // The region must have no outstanding accesses when this call begins.
 
         uint32_t repeat = copyShape.row();
         uint32_t stride = srcLayout.stride(0);
@@ -497,8 +492,9 @@ struct TileRemoteCopy<
             repeat * stride * Catlass::SizeOfBits<ElementSrc>::value / Catlass::SizeOfBits<uint8_t>::value;
         aclshmemx_udma_put_nbi(
             (__gm__ uint8_t*)dstTensor.GetPhyAddr(), (__gm__ uint8_t*)srcTensor.GetPhyAddr(),
-            (__ubuf__ uint8_t*)ubLocal.GetPhyAddr(), messageLen, peerIdx, SYNC_ID);
+            (__ubuf__ uint8_t*)tmpUb.GetPhyAddr(), messageLen, peerIdx, copyEventId);
 
+        // PIPE_MTE3 has consumed tmpUb on return; quiet also completes the GM payload.
         aclshmemx_udma_quiet(peerIdx);
     }
 };

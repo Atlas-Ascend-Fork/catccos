@@ -27,8 +27,6 @@ using Catlass::GemmCoord;
 using Catlass::MatrixCoord;
 using namespace AscendC;
 
-constexpr uint32_t UDMA_WQE_SCRATCH_BYTES = 256;
-
 template <
     class BlockMmad_, class BlockAllGather_, class BlockUdmaAllGather_, class BlockScheduler_,
     class BlockAllGatherScheduler_, uint32_t WORKSPACE_STAGES_>
@@ -237,7 +235,7 @@ public:
         uint32_t commLoops = CeilDiv(params.problemShape.m(), commSizeM);
 
         BlockAllGather allGather(resource, params.allGatherParams);
-        BlockUdmaAllGather udmaAllGather;
+        BlockUdmaAllGather udmaAllGather(resource);
 
         AscendC::GlobalTensor<ElementA> gmA;
         gmA.SetGlobalBuffer(params.ptrA);

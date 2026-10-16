@@ -281,8 +281,23 @@ public:
 
     using TileRemoteCopy = TileRemoteCopy_;
 
+    static constexpr uint32_t WQE_SCRATCH_BYTES = TileRemoteCopy::UDMA_WQE_SCRATCH_BYTES;
+    static_assert(UB_STAGES > 0, "UDMA requires at least one UB stage");
+    static_assert(UB_STAGES <= ArchTag::UB_SIZE / WQE_SCRATCH_BYTES, "UDMA scratch exceeds UB capacity");
+    static_assert(WQE_SCRATCH_BYTES % 32 == 0, "UDMA scratch must be UB-aligned");
+
     CATLASS_DEVICE
-    CommBlock() = default;
+    CommBlock(Catlass::Arch::Resource<ArchTag>& resource)
+    {
+        // Current kernels run MTE and UDMA on separate AIVs.
+        // Sequential UDMA blocks can reuse it after each Tile call's quiet.
+        size_t ubOffset = 0;
+        for (uint32_t i = 0; i < UB_STAGES; ++i) {
+            ubSList[i] = resource.ubBuf.template GetBufferByByte<ElementDst>(ubOffset);
+            ubOffset += WQE_SCRATCH_BYTES;
+            copyEventIdList[i] = i;
+        }
+    }
 
     CATLASS_DEVICE
     ~CommBlock() {}
@@ -293,7 +308,7 @@ public:
         AscendC::GlobalTensor<ElementDst> const& gmDst, LayoutDst const& layoutDst,
         MatrixCoord const& actualCommBlockShape, uint32_t rankIdx)
     {
-        if (actualCommBlockShape.row() == 0) {
+        if (actualCommBlockShape.row() == 0 || actualCommBlockShape.column() == 0) {
             return;
         }
 

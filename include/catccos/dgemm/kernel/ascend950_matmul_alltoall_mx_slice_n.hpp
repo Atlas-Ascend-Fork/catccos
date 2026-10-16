@@ -370,7 +370,7 @@ public:
         GemmCoord mmadBlockShape = GemmCoord{L1_TILE_M, L1_TILE_N, L1_TILE_K};
         GemmCoord problemShapeInRank = params.problemShape.GetCoordMNK(); // (M, N, K)
 
-        BlockComm blockRemoteCopy;
+        BlockComm blockRemoteCopy(resource);
         uint32_t chunkN = problemShapeInRank.n() / params.rankSize; // per-rank N-slice
         uint32_t commShapeM = params.commInterval * L1_TILE_M;
         uint32_t commLoops = CeilDiv(problemShapeInRank.m(), commShapeM);

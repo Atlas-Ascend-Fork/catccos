@@ -348,8 +348,8 @@ public:
         uint64_t aWorkspaceBytes = static_cast<uint64_t>(WORKSPACE_STAGES) * aStageStride *
                                    Catlass::SizeOfBits<ElementA>::value / Catlass::SizeOfBits<uint8_t>::value;
 
-        BlockUdmaAllToAll udmaAllToAll;
-        BlockUdmaAllToAllScale udmaAllToAllScale;
+        BlockUdmaAllToAll udmaAllToAll(resource);
+        BlockUdmaAllToAllScale udmaAllToAllScale(resource);
 
         AscendC::GlobalTensor<ElementA> gmA;
         gmA.SetGlobalBuffer(params.ptrA);
