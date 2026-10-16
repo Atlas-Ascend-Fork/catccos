@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail
 #
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This file is a part of the CANN Open Software.
@@ -13,7 +14,7 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 PROJECT_ROOT=$( dirname $( dirname $(dirname "$SCRIPT_DIR")))
 UTILS_PATH=${PROJECT_ROOT}/examples/utils
 CSV_FILE="${SCRIPT_DIR}/test_shapes.csv"
-  
+
 source $PROJECT_ROOT/3rdparty/shmem/install/set_env.sh || {
     echo "[ERROR] Running set_env.sh in $PROJECT_ROOT/3rdparty/shmem/install failed."
     exit 1
@@ -34,23 +35,28 @@ EXEC_BIN=${PROJECT_ROOT}/build/bin/matmul_allreduce
 tail -n +2 "$CSV_FILE" | while IFS=',' read -r M K N; do
     echo "Processing test case: M=${M}, K=${K}, N=${N}"
 
-    #Generate golden data
     rm -rf ./out/*.bin
-    python3 ${UTILS_PATH}/gen_data.py "mmar" 1 ${RANK_SIZE} ${M} ${N} ${K} 0 0 ${DATA_DIR}
+    python3 ${UTILS_PATH}/gen_data.py "mmar" 1 ${RANK_SIZE} ${M} ${N} ${K} 0 0 ${DATA_DIR} || exit 1
 
-    # Set necessary parameters
     IPPORT="tcp://127.0.0.1:8788"
-
-    # Start Process
+    pids=()
     for (( idx = 0; idx < ${RANK_SIZE}; idx = idx + 1 )); do
         ${EXEC_BIN} "$RANK_SIZE" "$idx" "$IPPORT" "$M" "$N" "$K" "${DATA_DIR}" "$1" &
+        pids+=("$!")
     done
 
-    # Wait until all process exit
-    wait
+    rank_failed=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || rank_failed=1
+    done
+    if [ "$rank_failed" -ne 0 ]; then
+        echo "[ERROR] A rank process failed." >&2
+        exit 1
+    fi
 
-    # Verify output
-    python3 ${UTILS_PATH}/verify_result.py ${DATA_DIR}/output.bin ${DATA_DIR}/golden.bin 1 ${M} ${N} ${K}
+    python3 ${UTILS_PATH}/verify_result.py ${DATA_DIR}/output.bin ${DATA_DIR}/golden.bin 1 ${M} ${N} ${K} || exit 1
 done
+run_rc=$?
 
-cd ${CURRENT_DIR}
+cd "${CURRENT_DIR}" || exit 1
+exit "$run_rc"

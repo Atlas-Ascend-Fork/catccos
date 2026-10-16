@@ -14,6 +14,11 @@ PROJECT_ROOT=$( dirname $( dirname $(dirname "$SCRIPT_DIR")))
 UTILS_PATH=${PROJECT_ROOT}/examples/utils
 CSV_FILE="${SCRIPT_DIR}/test_shapes.csv"
 
+if [ "$#" -ne 1 ]; then
+    echo "Usage: bash scripts/run.sh <device_list>" >&2
+    exit 1
+fi
+
 source $PROJECT_ROOT/3rdparty/shmem/install/set_env.sh || {
     echo "[ERROR] Running set_env.sh in $PROJECT_ROOT/3rdparty/shmem/install failed."
     exit 1

@@ -18,14 +18,17 @@
 ## 快速开始
 
 ```bash
-# 1. 编译时开启打点
-bash scripts/build.sh -DENABLE_TIMER=ON ..
+# 以 matmul_reduce_scatter 样例为例，在仓库根目录执行
 
-# 2. 正常运行程序，结束后自动在当前目录生成 output_timer/
-例：bash scripts/run.sh "mmrs" 1 0 10 0,1
+# 1. 编译时开启打点
+bash examples/matmul_reduce_scatter/scripts/build.sh -DENABLE_TIMER=ON
+
+# 2. 运行程序，参数为逗号分隔的 device_list
+#    结束后在样例目录生成 output_timer/
+bash examples/matmul_reduce_scatter/scripts/run.sh 0,1
 
 # 3. 后处理生成可视化时间线
-python3 tests/dynamic_tiling/utils/process.py ./output_timer/ mmrs
+python3 tests/dynamic_tiling/utils/process.py examples/matmul_reduce_scatter/output_timer/ mmrs
 ```
 
 打开 Chrome 浏览器访问 `chrome://tracing`，点击 Load 加载生成的 JSON 文件即可查看流水线排布。

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 #
 # Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # This file is a part of the CANN Open Software.
@@ -11,6 +12,11 @@
 CURRENT_DIR=$(pwd)
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 PROJECT_ROOT=$( dirname $( dirname $(dirname "$SCRIPT_DIR")))
+CMAKE_EXTRA_ARGS=("$@")
+
+# setup.sh consumes the caller's positional parameters when sourced without
+# explicit arguments. Clear them here and use the saved copy for CMake below.
+set --
 
 source $PROJECT_ROOT/examples/utils/setup.sh || {
     echo "[ERROR] Running setup.sh in $PROJECT_ROOT/examples/utils failed."
@@ -20,5 +26,5 @@ source $PROJECT_ROOT/examples/utils/setup.sh || {
 SOURCE_DIR=$PROJECT_ROOT
 BUILD_DIR=$PROJECT_ROOT/build
 mkdir -p $BUILD_DIR
-cmake -B $BUILD_DIR -S $SOURCE_DIR -DCATCCOS_BUILD_TESTS=OFF
-cmake --build $BUILD_DIR --target matmul_reduce_scatter -j
+cmake -B "$BUILD_DIR" -S "$SOURCE_DIR" -DCATCCOS_BUILD_TESTS=OFF "${CMAKE_EXTRA_ARGS[@]}"
+cmake --build "$BUILD_DIR" --target matmul_reduce_scatter --clean-first -j
