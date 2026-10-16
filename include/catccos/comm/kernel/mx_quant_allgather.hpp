@@ -138,7 +138,7 @@ public:
         uint32_t inputNum = params.problemShape.m();
         uint32_t N = params.problemShape.n();
         uint32_t commSizeM = TILE_M;
-        uint32_t blockLoops = CeilDiv(inputNum, commSizeM);
+        uint32_t blockLoops = static_cast<uint32_t>(CeilDiv(static_cast<uint64_t>(inputNum), commSizeM));
 
         uint32_t quantBytesPerBlock =
             commSizeM * N * Catlass::SizeOfBits<ElementOutput>::value / Catlass::SizeOfBits<uint8_t>::value;
@@ -173,7 +173,7 @@ public:
 
             if (subcoreIdx == 1) {
                 // Quant: input → IPC [quantData | mxScale]
-                auto offset = blockIdx * commSizeM;
+                uint64_t offset = static_cast<uint64_t>(blockIdx) * commSizeM;
 
                 if (step >= WORKSPACE_STAGES) {
                     for (uint32_t rankId = 0; rankId < params.rankSize; rankId++) {
@@ -217,7 +217,7 @@ public:
 
             } else {
                 // ====== COMM CORE (AllGather via CommBlock) ======
-                auto offset = blockIdx * commSizeM;
+                uint64_t offset = static_cast<uint64_t>(blockIdx) * commSizeM;
                 uint32_t numScalesPerRow = N / BLOCK_SIZE;
 
                 BlockAllGather commBlock(resource, params.AllGatherParams);
@@ -225,7 +225,7 @@ public:
 
                 for (uint32_t rankId = 0; rankId < params.rankSize; rankId++) {
                     uint32_t remoteRankIdx = (aicoreIdx + rankId) % params.rankSize;
-                    uint32_t commDstOffset = remoteRankIdx * inputNum;
+                    uint64_t commDstOffset = static_cast<uint64_t>(remoteRankIdx) * inputNum;
 
                     auto remoteSyncQuantFinish =
                         static_cast<__gm__ int32_t*>(shmem_ptr(syncQuantFinish, remoteRankIdx));
@@ -241,7 +241,7 @@ public:
 
                         AscendC::GlobalTensor<ElementOutput> gmOutput;
                         gmOutput.SetGlobalBuffer(params.ptrOutput);
-                        uint32_t dstQuantOffset = (commDstOffset + offset) * N;
+                        uint64_t dstQuantOffset = (commDstOffset + offset) * N;
 
                         uint32_t quantCols = N;
                         LayoutOutput layoutSrc{actualCommSizeM, quantCols, quantCols};
@@ -263,7 +263,7 @@ public:
 
                         AscendC::GlobalTensor<ElementScale> gmMxScaleOut;
                         gmMxScaleOut.SetGlobalBuffer(params.ptrMxScale);
-                        uint32_t dstScaleOffset = (commDstOffset + offset) * numScalesPerRow;
+                        uint64_t dstScaleOffset = (commDstOffset + offset) * numScalesPerRow;
 
                         LayoutOutput layoutSrc{actualCommSizeM, numScalesPerRow, numScalesPerRow};
                         LayoutOutput layoutDst{actualCommSizeM, numScalesPerRow, numScalesPerRow};

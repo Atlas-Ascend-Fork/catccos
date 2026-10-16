@@ -3,6 +3,7 @@
 #define QUANT_ALLGATHER_HOST_H
 
 #include "operator_registry.h"
+#include "quant_size_utils.h"
 #include "catlass/detail/alignment.hpp"
 
 class QuantAllGatherOperator : public CatccosOperator {
@@ -11,11 +12,12 @@ public:
         KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
         constexpr uint32_t SCALE_COUNT = 1;
-        uint32_t dataSize = GetDataSize(cocTiling);
+        size_t inputSize = CheckedBufferSize({cocTiling.m, cocTiling.n, cocTiling.k, sizeof(uint16_t)});
+        size_t dataSize = inputSize / sizeof(uint16_t);
         uint32_t rankSize = cocTiling.rankSize;
-        size_t inputSize = static_cast<size_t>(dataSize) * sizeof(uint16_t);
+        CheckQuantBlockCount(dataSize, rankSize);
         size_t scaleSize = static_cast<size_t>(SCALE_COUNT) * sizeof(float);
-        size_t outputSize = static_cast<size_t>(dataSize) * static_cast<size_t>(rankSize) * sizeof(uint8_t);
+        size_t outputSize = CheckedBufferSize({dataSize, rankSize});
 
         uint8_t* inputDevice = AllocateAndLoadBuffer(
             inputSize, dataFile, "/rank_" + std::to_string(rankId) + "_input.bin", dataSize,
@@ -32,9 +34,7 @@ public:
     void WriteResultFile(
         const KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
-        uint32_t dataSize = GetDataSize(cocTiling);
-        uint32_t rankSize = cocTiling.rankSize;
-        size_t outputSize = static_cast<size_t>(dataSize) * static_cast<size_t>(rankSize) * sizeof(uint8_t);
+        size_t outputSize = CheckedBufferSize({cocTiling.m, cocTiling.n, cocTiling.k, cocTiling.rankSize});
 
         uint8_t* outputDevice = params.ptrC;
         uint8_t* outputHost;
@@ -52,17 +52,15 @@ public:
     bool CheckCocTilingParams(uint32_t rankSize, const CocTilingParams& cocTiling) override
     {
         auto blockCount = MAX_BLOCK_COUNT;
-        uint32_t dataSize = GetDataSize(cocTiling);
         uint32_t commInterval = cocTiling.commInterval;
         int32_t maxPeerMemPerRank = SHMEM_BUFF_BYTES / sizeof(uint16_t) / rankSize / blockCount;
-        return commInterval * 32 * dataSize < maxPeerMemPerRank;
+        return CheckedBufferSize({cocTiling.m, cocTiling.n, cocTiling.k, commInterval, 32}) < maxPeerMemPerRank;
     }
 
 private:
-    uint32_t GetDataSize(const CocTilingParams& cocTiling) const { return cocTiling.m * cocTiling.n * cocTiling.k; }
     template <typename T>
     uint8_t* AllocateAndLoadBuffer(
-        size_t bufferSize, const std::string& dataFile, const std::string& fileSuffix, uint32_t defaultCount,
+        size_t bufferSize, const std::string& dataFile, const std::string& fileSuffix, size_t defaultCount,
         T defaultValue)
     {
         uint8_t* devicePtr;

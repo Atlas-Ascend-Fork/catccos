@@ -43,7 +43,8 @@ public:
 
     // 只传 shape，通过 shape 推断 stride 的构造函数
     CATLASS_HOST_DEVICE constexpr DistRowMajor(Shape const& shape)
-        : shape_(shape), stride_(Catlass::MakeCoord<LongIndex>(shape[1], 1, shape[0] * shape[1]))
+        : shape_(shape),
+          stride_(Catlass::MakeCoord<LongIndex>(shape[1], 1, static_cast<LongIndex>(shape[0]) * shape[1]))
     {}
 
     CATLASS_HOST_DEVICE constexpr DistRowMajor(Index rows, Index cols, Index ranks)

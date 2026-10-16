@@ -4,6 +4,7 @@
 #define MX_QUANT_ALLGATHER_HOST_H
 
 #include "operator_registry.h"
+#include "quant_size_utils.h"
 #include "catlass/detail/alignment.hpp"
 
 class MxQuantAllGatherOperator : public CatccosOperator {
@@ -25,18 +26,20 @@ public:
         uint32_t rankSize = cocTiling.rankSize;
 
         // Input: M × N bf16 elements (per rank)
-        size_t inputSize = static_cast<size_t>(M) * N * sizeof(uint16_t);
+        size_t inputSize = CheckedBufferSize({M, N, sizeof(uint16_t)});
+        size_t dataSize = inputSize / sizeof(uint16_t);
 
         // Output: M × (N / PACK_RATIO) × rankSize quantized bytes
-        size_t outputSize = static_cast<size_t>(M) * (N / PACK_RATIO) * rankSize * sizeof(uint8_t);
+        size_t outputSize = CheckedBufferSize({M, N / PACK_RATIO, rankSize});
 
         // MxScale: M × (N / BLOCK_SIZE) × rankSize E8M0 bytes
         uint32_t numScalesPerRow = N / MX_BLOCK_SIZE;
+        // N / MX_BLOCK_SIZE <= N / PACK_RATIO, so this is bounded by the checked outputSize.
         size_t mxScaleSize = static_cast<size_t>(M) * numScalesPerRow * rankSize;
 
         // Allocate input
         uint8_t* inputDevice = AllocateAndLoadBuffer(
-            inputSize, dataFile, "/rank_" + std::to_string(rankId) + "_input.bin", M * N,
+            inputSize, dataFile, "/rank_" + std::to_string(rankId) + "_input.bin", dataSize,
             static_cast<fp16_t>(rankId + 1));
 
         // Allocate output (quantized data)
@@ -59,7 +62,7 @@ public:
         uint32_t numScalesPerRow = N / MX_BLOCK_SIZE;
 
         // Write quantized output
-        size_t outputSize = static_cast<size_t>(M) * (N / PACK_RATIO) * rankSize * sizeof(uint8_t);
+        size_t outputSize = CheckedBufferSize({M, N / PACK_RATIO, rankSize});
         uint8_t* outputDevice = params.ptrC; // ptrC = outputDevice
         uint8_t* outputHost;
         ACL_CHECK(aclrtMallocHost((void**)(&outputHost), outputSize));
@@ -68,6 +71,7 @@ public:
         ACL_CHECK(aclrtFreeHost(outputHost));
 
         // Write mxscale output
+        // Bounded by the checked outputSize, as in AllocateDeviceSpace.
         size_t mxScaleSize = static_cast<size_t>(M) * numScalesPerRow * rankSize;
         uint8_t* mxScaleDevice = params.ptrB; // ptrB = mxScaleDevice
         uint8_t* mxScaleHost;
@@ -92,17 +96,16 @@ public:
         // Check N is divisible by BLOCK_SIZE
         if (N % MX_BLOCK_SIZE != 0)
             return false;
-        uint32_t dataSize = cocTiling.m * N;
         // IPC buffer needs: quantized data + mxscale per block
         int32_t maxPeerMemPerRank = SHMEM_BUFF_BYTES / rankSize / blockCount;
-        uint32_t bytesPerBlock = dataSize * sizeof(uint8_t) + cocTiling.m * (N / MX_BLOCK_SIZE);
+        size_t bytesPerBlock = CheckedBufferSize({cocTiling.m, static_cast<size_t>(N) + N / MX_BLOCK_SIZE});
         return bytesPerBlock < maxPeerMemPerRank;
     }
 
 private:
     template <typename T>
     uint8_t* AllocateAndLoadBuffer(
-        size_t bufferSize, const std::string& dataFile, const std::string& fileSuffix, uint32_t defaultCount,
+        size_t bufferSize, const std::string& dataFile, const std::string& fileSuffix, size_t defaultCount,
         T defaultValue)
     {
         uint8_t* devicePtr;

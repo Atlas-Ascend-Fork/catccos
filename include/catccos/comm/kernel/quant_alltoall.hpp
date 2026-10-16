@@ -142,11 +142,12 @@ public:
         uint32_t aicoreIdx = AscendC::GetBlockIdx() / AscendC::GetSubBlockNum();
         uint32_t aicoreNum = AscendC::GetBlockNum();
         uint32_t subcoreIdx = AscendC::GetSubBlockIdx();
-        uint32_t inputNum = params.problemShape.m() * params.problemShape.n() * params.problemShape.k();
-        uint32_t elementNumPerCore = inputNum / params.rankSize;
+        uint64_t inputNum =
+            static_cast<uint64_t>(params.problemShape.m()) * params.problemShape.n() * params.problemShape.k();
+        uint64_t elementNumPerCore = inputNum / params.rankSize;
         uint32_t commSizeM = TILE_M;
         // 这里是每个核处理的总行数除以每次处理的行数
-        uint32_t blockLoops = CeilDiv(elementNumPerCore, commSizeM); // 8/2=4
+        uint32_t blockLoops = static_cast<uint32_t>(CeilDiv(elementNumPerCore, commSizeM)); // Host checks flag range
         BlockQuant quant(resource);
         BlockAllToAll allToAll(resource, params.allToAllParams);
 
@@ -161,11 +162,12 @@ public:
         // region assigned to the target peer.
         for (uint32_t blockIdx = 0; blockIdx < blockLoops; ++blockIdx) {
             uint32_t stageId = blockIdx % WORKSPACE_STAGES;
-            uint32_t actualCommSizeM = Min(commSizeM, elementNumPerCore - blockIdx * commSizeM);
+            uint64_t quantSrcOffset = static_cast<uint64_t>(blockIdx) * commSizeM;
+            uint32_t actualCommSizeM =
+                static_cast<uint32_t>(Min(static_cast<uint64_t>(commSizeM), elementNumPerCore - quantSrcOffset));
             uint32_t actualBlockSize = actualCommSizeM;
             uint32_t curFlagValue = flagBase + blockIdx + 1;
             if (subcoreIdx == 1) { // quant
-                uint32_t quantSrcOffset = blockIdx * commSizeM;
                 uint32_t processRankIdx = aicoreIdx % params.rankSize;
                 // Reuse a workspace stage only after the corresponding alltoall consumer has finished with it.
                 if (blockIdx >= WORKSPACE_STAGES) {
@@ -177,7 +179,7 @@ public:
                         flagBase + blockIdx + 1 - WORKSPACE_STAGES);
                 }
                 uint32_t blockOffset = (stageId * params.rankSize + processRankIdx) * commSizeM;
-                uint32_t curRankOffset = processRankIdx * elementNumPerCore;
+                uint64_t curRankOffset = processRankIdx * elementNumPerCore;
                 auto srcOffset = curRankOffset + quantSrcOffset;
                 typename BlockQuant::Params quantParamsForBlock{
                     params.ptrInput, params.layoutInput,
@@ -205,13 +207,13 @@ public:
                 allToAll.InitBlockLoop();
                 uint32_t commSrcOffset = (stageId * params.rankSize + params.rankIdx) * commSizeM;
                 uint32_t blockSrcOffsetInRank = 0;
-                uint32_t blockDstOffsetInRank = blockIdx * commSizeM;
-                uint32_t commDstOffset = remoteRankIdx * elementNumPerCore;
+                uint64_t blockDstOffsetInRank = quantSrcOffset;
+                uint64_t commDstOffset = remoteRankIdx * elementNumPerCore;
                 AscendC::GlobalTensor<ElementOutput> gmSymmetric;
                 gmSymmetric.SetGlobalBuffer(ptrSymmetric);
 
                 uint32_t offsetSrc = commSrcOffset + blockSrcOffsetInRank;
-                uint32_t offsetDst = commDstOffset + blockDstOffsetInRank;
+                uint64_t offsetDst = commDstOffset + blockDstOffsetInRank;
 
                 auto gmBlockSrc = gmSymmetric[offsetSrc];
                 AscendC::GlobalTensor<ElementOutput> gmOutput;

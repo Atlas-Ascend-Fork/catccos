@@ -152,23 +152,25 @@ public:
         uint32_t aicoreNum = AscendC::GetBlockNum();
         uint32_t subcoreIdx = AscendC::GetSubBlockIdx();
         // params.problemShape.m() 和 params.problemShape.n()分别表示输入的行数和列数
-        uint32_t inputNum = params.problemShape.m() * params.problemShape.n() * params.problemShape.k();
+        uint64_t inputNum =
+            static_cast<uint64_t>(params.problemShape.m()) * params.problemShape.n() * params.problemShape.k();
         constexpr uint32_t MIN_COMM_BYTES_PER_CORE = 32;
         constexpr uint32_t MIN_ELMENTS_PER_CORE =
             (MIN_COMM_BYTES_PER_CORE + sizeof(ElementOutput) - 1) / sizeof(ElementOutput);
-        uint32_t coreNumPerStep = CeilDiv(inputNum, MIN_ELMENTS_PER_CORE);
-        coreNumPerStep = coreNumPerStep == 0 ? 1 : Min(coreNumPerStep, params.rankSize);
+        uint32_t coreNumPerStep =
+            static_cast<uint32_t>(Min(CeilDiv(inputNum, MIN_ELMENTS_PER_CORE), static_cast<uint64_t>(params.rankSize)));
+        coreNumPerStep = coreNumPerStep == 0 ? 1 : coreNumPerStep;
         if (aicoreIdx >= coreNumPerStep) {
             return;
         }
-        uint32_t elementNumPerCore = CeilDiv(inputNum, coreNumPerStep); // 每个核处理的数据量
-        uint32_t processNum = elementNumPerCore;
+        uint64_t elementNumPerCore = CeilDiv(inputNum, coreNumPerStep); // 每个核处理的数据量
+        uint64_t processNum = elementNumPerCore;
         if (aicoreIdx == (coreNumPerStep - 1)) { // 如果是最后一个核 需要处理尾块
             processNum = inputNum - aicoreIdx * elementNumPerCore;
         }
         uint32_t commSizeM = TILE_M;
         // 这里是每个核处理的总行数除以每次处理的行数
-        uint32_t blockLoops = CeilDiv(processNum, commSizeM); // 每个核的循环次数
+        uint32_t blockLoops = static_cast<uint32_t>(CeilDiv(processNum, commSizeM)); // Host checks flag range
 
         BlockQuant quant(resource);
         BlockAllGather allGather(resource, params.AllGatherParams);
@@ -184,12 +186,13 @@ public:
         // pulling that slice from every rank into the final output buffer.
         for (uint32_t blockIdx = 0; blockIdx < blockLoops; ++blockIdx) {
             uint32_t stageId = blockIdx % WORKSPACE_STAGES;
-            uint32_t actualCommSizeM = Min(commSizeM, processNum - blockIdx * commSizeM);
+            uint64_t quantSrcOffset = static_cast<uint64_t>(blockIdx) * commSizeM;
+            uint32_t actualCommSizeM =
+                static_cast<uint32_t>(Min(static_cast<uint64_t>(commSizeM), processNum - quantSrcOffset));
             uint32_t actualBlockSize = actualCommSizeM;
             uint32_t curFlagValue = flagBase + blockIdx + 1;
-            if (subcoreIdx == 1) { // quant
-                uint32_t quantSrcOffset = blockIdx * commSizeM;
-                uint32_t curCoreOffset = aicoreIdx * elementNumPerCore; // 每个核负责1/coreNum的数据块
+            if (subcoreIdx == 1) {                                      // quant
+                uint64_t curCoreOffset = aicoreIdx * elementNumPerCore; // 每个核负责1/coreNum的数据块
                 // Reuse a workspace stage only after every rank has observed the previous allgather finish.
                 if (blockIdx >= WORKSPACE_STAGES) {
                     for (int rankId = 0; rankId < params.rankSize; rankId++) {
@@ -230,13 +233,13 @@ public:
                     allGather.InitBlockLoop();
                     uint32_t commSrcOffset = (stageId * coreNumPerStep + aicoreIdx) * commSizeM;
                     uint32_t blockSrcOffsetInRank = 0;
-                    uint32_t blockDstOffsetInRank = aicoreIdx * elementNumPerCore + blockIdx * commSizeM;
-                    uint32_t commDstOffset = remoteRankIdx * inputNum;
+                    uint64_t blockDstOffsetInRank = aicoreIdx * elementNumPerCore + quantSrcOffset;
+                    uint64_t commDstOffset = remoteRankIdx * inputNum;
                     AscendC::GlobalTensor<ElementOutput> gmSymmetric;
                     gmSymmetric.SetGlobalBuffer(ptrSymmetric);
 
                     uint32_t offsetSrc = commSrcOffset + blockSrcOffsetInRank;
-                    uint32_t offsetDst = commDstOffset + blockDstOffsetInRank;
+                    uint64_t offsetDst = commDstOffset + blockDstOffsetInRank;
 
                     auto gmBlockSrc = gmSymmetric[offsetSrc];
                     AscendC::GlobalTensor<ElementOutput> gmOutput;
