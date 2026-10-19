@@ -318,8 +318,8 @@ public:
     }
 
 private:
-    AscendC::LocalTensor<ElementDst> ubSList[UB_STAGES];
-    uint32_t copyEventIdList[UB_STAGES];
+    AscendC::LocalTensor<ElementDst> ubSList[UB_STAGES]{};
+    uint32_t copyEventIdList[UB_STAGES]{};
     uint32_t ubListId{0};
     TileRemoteCopy tileRemoteCopy;
 };

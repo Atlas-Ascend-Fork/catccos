@@ -18,6 +18,12 @@ public:
     static constexpr uint32_t PACK_RATIO = 1;
 #endif
 
+    static bool CheckProblemShape(uint32_t rankSize, const CocTilingParams& cocTiling)
+    {
+        return rankSize > 0 && rankSize <= MAX_RANK_SIZE && cocTiling.m > 0 && cocTiling.n > 0 &&
+               cocTiling.n % MX_BLOCK_SIZE == 0;
+    }
+
     void AllocateDeviceSpace(
         KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
@@ -93,8 +99,7 @@ public:
     {
         auto blockCount = MAX_BLOCK_COUNT;
         uint32_t N = cocTiling.n;
-        // Check N is divisible by BLOCK_SIZE
-        if (N % MX_BLOCK_SIZE != 0)
+        if (!CheckProblemShape(rankSize, cocTiling))
             return false;
         // IPC buffer needs: quantized data + mxscale per block
         int32_t maxPeerMemPerRank = SHMEM_BUFF_BYTES / rankSize / blockCount;

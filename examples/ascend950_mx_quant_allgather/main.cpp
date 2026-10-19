@@ -71,7 +71,15 @@ struct Options {
         }
 
         rankSize = std::atoi(argv[1]);
+        if (rankSize <= 0 || rankSize > MAX_RANK_SIZE) {
+            std::cerr << "rankSize must be in [1, " << MAX_RANK_SIZE << "]" << std::endl;
+            return -1;
+        }
         rankId = std::atoi(argv[2]);
+        if (rankId < 0 || rankId >= rankSize) {
+            std::cerr << "rankId must be in [0, rankSize)" << std::endl;
+            return -1;
+        }
         ipPort = argv[3];
         m = std::atoi(argv[4]);
         n = std::atoi(argv[5]);
@@ -86,6 +94,10 @@ struct Options {
             for (size_t i = 0; i < rankSize; ++i) {
                 deviceIdList.push_back(i);
             }
+        }
+        if (static_cast<size_t>(rankId) >= deviceIdList.size()) {
+            std::cerr << "device_id_list does not contain rankId " << rankId << std::endl;
+            return -1;
         }
         return 0;
     }
@@ -124,6 +136,11 @@ int main(int argc, char** argv)
     int32_t deviceId = options.deviceIdList[rankId];
 
     CocTilingParams cocTiling = SetupTilingParams(options.m, options.n, options.k);
+    if (!MxQuantAllGatherOperator::CheckProblemShape(rankSize, cocTiling)) {
+        std::cerr << "[ERROR] M and N must be positive, and N must be divisible by "
+                  << MxQuantAllGatherOperator::MX_BLOCK_SIZE << "\n";
+        return 1;
+    }
 
     ACL_CHECK(aclInit(nullptr));
     ACL_CHECK(aclrtSetDevice(deviceId));
