@@ -351,6 +351,7 @@ if __name__ == '__main__':
         res = verify_result()
         if not res:
             print(f"{RED}ERROR{RESET}")
+            sys.exit(1)
         else:
             print(f"{GREEN}PASS{RESET}")
         sys.exit(0 if res else 1)

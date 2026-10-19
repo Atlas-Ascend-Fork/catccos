@@ -65,7 +65,7 @@ int RunKernel(
 {
     using Config = Ascend950MxFp8AllToAllMatmulSplitKUrmaConfig<
         ElementA, LayoutA, ElementB, LayoutB, ElementMxScaleA, LayoutMxScaleA, ElementMxScaleB, LayoutMxScaleB,
-        ElementC, LayoutC, SWIZZLE_OFFSET>;
+        ElementC, LayoutC, SWIZZLE_OFFSET, SplitKUrmaExample::IS_LOCAL_ATOMIC>;
     using DeviceOp = typename Config::Device;
 
     Catlass::GemmCoord problemShape{cocTiling.m, cocTiling.n, cocTiling.k};
@@ -77,12 +77,12 @@ int RunKernel(
     deviceOp.Initialize(args);
 
     ACL_CHECK(aclrtSynchronizeStream(stream));
-    std::cout << "Before calling FP8_MX_AllToAll_MM_SplitK_URMA kernel " << std::endl;
+    std::cout << "Before calling " << SplitKUrmaExample::OPERATOR_NAME << " kernel " << std::endl;
     for (int i = 0; i < 10; i++) {
         deviceOp.Run(stream, blockNum, fftsAddr);
     }
     ACL_CHECK(aclrtSynchronizeStream(stream));
-    std::cout << "After calling FP8_MX_AllToAll_MM_SplitK_URMA kernel " << std::endl;
+    std::cout << "After calling " << SplitKUrmaExample::OPERATOR_NAME << " kernel " << std::endl;
 
     return 0;
 }
@@ -127,9 +127,7 @@ int RunKernelBySwizzleOffset(
 } // namespace
 
 struct Options {
-    static constexpr auto HELPER =
-        "Usage: ascend950_mxfp8_alltoall_matmul_split_k_urma rank_size rank_id ip_port m n k [data_path] "
-        "[device_id_list]\n";
+    static constexpr auto HELP_SUFFIX = " rank_size rank_id ip_port m n k [data_path] [device_id_list]\n";
 
     int rankSize;
     int rankId;
@@ -155,7 +153,7 @@ struct Options {
         };
 
         if (argc < static_cast<int>(ArgsIndex::DATA_PATH_INDEX) || argc > static_cast<int>(ArgsIndex::INDEX_MAX)) {
-            printf(HELPER);
+            std::printf("Usage: %s%s", SplitKUrmaExample::EXECUTABLE_NAME, HELP_SUFFIX);
             return -1;
         }
 
@@ -166,7 +164,7 @@ struct Options {
         n = std::atoi(argv[static_cast<int>(ArgsIndex::N_INDEX)]);
         k = std::atoi(argv[static_cast<int>(ArgsIndex::K_INDEX)]);
         if (rankSize <= 0 || rankId < 0 || rankId >= rankSize) {
-            printf(HELPER);
+            std::printf("Usage: %s%s", SplitKUrmaExample::EXECUTABLE_NAME, HELP_SUFFIX);
             return -1;
         }
         if (argc > static_cast<int>(ArgsIndex::DATA_PATH_INDEX)) {
@@ -183,7 +181,7 @@ struct Options {
             }
         }
         if (static_cast<int>(deviceIdList.size()) <= rankId) {
-            printf(HELPER);
+            std::printf("Usage: %s%s", SplitKUrmaExample::EXECUTABLE_NAME, HELP_SUFFIX);
             return -1;
         }
         return 0;
@@ -257,9 +255,9 @@ int main(int argc, char** argv)
     attributes.option_attr.data_op_engine_type = ACLSHMEM_DATA_OP_UDMA;
     status = aclshmemx_init_attr(ACLSHMEMX_INIT_WITH_DEFAULT, &attributes);
 
-    auto op = OperatorRegistry::Instance().CreateOperator("Ascend950MxFp8AllToAllMatmulSplitKUrma");
+    auto op = OperatorRegistry::Instance().CreateOperator(SplitKUrmaExample::OPERATOR_NAME);
     if (!op) {
-        std::cout << "Operator Ascend950MxFp8AllToAllMatmulSplitKUrma not found!" << std::endl;
+        std::cout << "Operator " << SplitKUrmaExample::OPERATOR_NAME << " not found!" << std::endl;
         return -1;
     }
     if (!op->ValidateCocTilingParams(rankSize, cocTiling)) {

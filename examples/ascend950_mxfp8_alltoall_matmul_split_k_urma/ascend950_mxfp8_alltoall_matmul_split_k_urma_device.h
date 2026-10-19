@@ -12,6 +12,8 @@
 #ifndef ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA_DEVICE_H
 #define ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA_DEVICE_H
 
+#include <type_traits>
+
 #include "catccos/catccos.hpp"
 #include "catccos/comm/block/comm_block.hpp"
 #include "catccos/comm/comm_dispatch_policy.hpp"
@@ -21,6 +23,7 @@
 #include "catccos/dgemm/block/block_swizzle_alltoall_matmul_k_split.hpp"
 #include "catccos/dgemm/device/device_dgemm.hpp"
 #include "catccos/dgemm/kernel/ascend950_alltoall_matmul_split_k_urma.hpp"
+#include "catccos/dgemm/kernel/ascend950_alltoall_matmul_split_k_urma_local_atomic.h"
 #include "catlass/arch/arch.hpp"
 #include "catlass/catlass.hpp"
 #include "catlass/epilogue/tile/tile_copy.hpp"
@@ -35,7 +38,8 @@ using namespace Catccos;
 
 template <
     class ElementA, class LayoutA, class ElementB, class LayoutB, class ElementMxScaleA, class LayoutMxScaleA,
-    class ElementMxScaleB, class LayoutMxScaleB, class ElementC, class LayoutC, uint32_t SWIZZLE_OFFSET_>
+    class ElementMxScaleB, class LayoutMxScaleB, class ElementC, class LayoutC, uint32_t SWIZZLE_OFFSET_,
+    bool LOCAL_ATOMIC_ = false>
 struct Ascend950MxFp8AllToAllMatmulSplitKUrmaConfig {
     using ArchTag = Catlass::Arch::Ascend950;
     static_assert(
@@ -58,7 +62,8 @@ struct Ascend950MxFp8AllToAllMatmulSplitKUrmaConfig {
 
     static constexpr bool IS_DYNAMIC = true;
 
-    using BlockMmadScheduler = Catccos::DGemm::Block::GemmBlockSwizzleAllToAllMatmulKSplit<SWIZZLE_OFFSET_, 1>;
+    using BlockMmadScheduler =
+        Catccos::DGemm::Block::GemmBlockSwizzleAllToAllMatmulKSplit<SWIZZLE_OFFSET_, LOCAL_ATOMIC_ ? 0 : 1>;
 
     using RemoteSrcType = AType;
     using RemoteDstType = AType;
@@ -76,8 +81,11 @@ struct Ascend950MxFp8AllToAllMatmulSplitKUrmaConfig {
     using BlockUdmaCommScale =
         Comm::Block::CommBlock<UdmaDispatch, RemoteScaleSrcType, RemoteScaleDstType, TileUdmaCopyScale>;
 
-    using Kernel = DGemm::Kernel::Ascend950AllToAllMatmulSplitKUrma<
+    using DefaultKernel = DGemm::Kernel::Ascend950AllToAllMatmulSplitKUrma<
         BlockMmad, BlockUdmaComm, BlockUdmaCommScale, BlockMmadScheduler, WORKSPACE_STAGES>;
+    using LocalAtomicKernel = DGemm::Kernel::Ascend950AllToAllMatmulSplitKUrmaLocalAtomic<
+        BlockMmad, BlockUdmaComm, BlockUdmaCommScale, BlockMmadScheduler, WORKSPACE_STAGES>;
+    using Kernel = std::conditional_t<LOCAL_ATOMIC_, LocalAtomicKernel, DefaultKernel>;
 
     using Device = Catccos::DGemm::Device::DeviceDGemm<Kernel>;
 };

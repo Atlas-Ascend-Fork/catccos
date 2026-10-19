@@ -46,6 +46,7 @@ class Config:
     device_ids: Tuple[int, ...]
     packed_pertoken_scale: bool
     keep_intermediate: bool
+    generate_local_atomic_golden: bool
 
     @property
     def chunk_m(self) -> int:
@@ -193,6 +194,10 @@ def golden_path(cfg: Config, rank_idx: int) -> str:
     return os.path.join(cfg.data_dir, f"golden_{rank_idx}.bin")
 
 
+def local_atomic_golden_path(cfg: Config, rank_idx: int) -> str:
+    return os.path.join(cfg.data_dir, f"golden_local_atomic_{rank_idx}.bin")
+
+
 def generate_input_files(cfg: Config) -> None:
     for rank_idx in range(cfg.rank_size):
         a_fp8 = make_random_fp8((cfg.m, cfg.local_k), cfg.seed + 1009 * rank_idx)
@@ -264,7 +269,8 @@ def generate_rank_golden(cfg: Config, dst_rank: int) -> None:
         MX_SCALE_DTYPE,
     )
     weight = weight_t.t().contiguous()
-    b_scale = pack_b_scale(unpack_b_scale_transposed(b_scale_kn2))
+    b_scale_logical = unpack_b_scale_transposed(b_scale_kn2)
+    b_scale = pack_b_scale(b_scale_logical)
 
     tensor_to_file(storage_to_file_bytes(input_after_a2a), a2a_concat_a_path(cfg, dst_rank))
     tensor_to_file(storage_to_file_bytes(a_scale_after_a2a_packed), a2a_concat_scale_path(cfg, dst_rank))
@@ -280,11 +286,77 @@ def generate_rank_golden(cfg: Config, dst_rank: int) -> None:
     )
     torch.npu.synchronize()
 
-    output = output.cpu().to(torch.float32).contiguous()
-    if output.shape != (cfg.chunk_m, cfg.n):
-        raise ValueError(f"rank {dst_rank}: expected output shape {(cfg.chunk_m, cfg.n)}, got {tuple(output.shape)}")
-    tensor_to_file(output, golden_path(cfg, dst_rank))
-    print(f"Generated torch_npu golden for rank {dst_rank}: shape={tuple(output.shape)}, dtype={output.dtype}")
+    output_fp32 = output.cpu().to(torch.float32).contiguous()
+    if output_fp32.shape != (cfg.chunk_m, cfg.n):
+        raise ValueError(
+            f"rank {dst_rank}: expected output shape {(cfg.chunk_m, cfg.n)}, got {tuple(output_fp32.shape)}"
+        )
+    tensor_to_file(output_fp32, golden_path(cfg, dst_rank))
+    print(
+        f"Generated torch_npu golden for rank {dst_rank}: shape={tuple(output_fp32.shape)}, dtype={output_fp32.dtype}"
+    )
+
+    if not cfg.generate_local_atomic_golden:
+        return
+
+    local_k_begin = dst_rank * cfg.local_k
+    local_k_end = local_k_begin + cfg.local_k
+    local_scale_begin = dst_rank * cfg.local_scale_k
+    local_scale_end = local_scale_begin + cfg.local_scale_k
+
+    local_a_scale_logical = a_scale_chunks[dst_rank]
+    local_a_scale = (
+        pack_a_scale(local_a_scale_logical) if cfg.packed_pertoken_scale else local_a_scale_logical.unsqueeze(1)
+    )
+    local_b_scale = pack_b_scale(b_scale_logical[local_scale_begin:local_scale_end, :])
+    local_output = npu_quant_matmul(
+        a_chunks[dst_rank].npu(),
+        weight[local_k_begin:local_k_end, :].contiguous().npu(),
+        local_b_scale.contiguous().npu(),
+        local_a_scale.contiguous().npu(),
+        output_dtype=output_dtype,
+    ).to(output_dtype)
+
+    remote_ranks = [rank_idx for rank_idx in range(cfg.rank_size) if rank_idx != dst_rank]
+    if remote_ranks:
+        remote_a = torch.cat([a_chunks[rank_idx] for rank_idx in remote_ranks], dim=1).contiguous()
+        remote_a_scale_logical = torch.cat([a_scale_chunks[rank_idx] for rank_idx in remote_ranks], dim=1).contiguous()
+        remote_a_scale = (
+            pack_a_scale(remote_a_scale_logical) if cfg.packed_pertoken_scale else remote_a_scale_logical.unsqueeze(1)
+        )
+        remote_weight = torch.cat(
+            [weight[rank_idx * cfg.local_k : (rank_idx + 1) * cfg.local_k, :] for rank_idx in remote_ranks],
+            dim=0,
+        ).contiguous()
+        remote_b_scale_logical = torch.cat(
+            [
+                b_scale_logical[
+                    rank_idx * cfg.local_scale_k : (rank_idx + 1) * cfg.local_scale_k,
+                    :,
+                ]
+                for rank_idx in remote_ranks
+            ],
+            dim=0,
+        ).contiguous()
+        remote_b_scale = pack_b_scale(remote_b_scale_logical)
+        remote_output = npu_quant_matmul(
+            remote_a.npu(),
+            remote_weight.npu(),
+            remote_b_scale.npu(),
+            remote_a_scale.contiguous().npu(),
+            output_dtype=output_dtype,
+        ).to(output_dtype)
+        local_atomic_output = (local_output + remote_output).to(output_dtype)
+    else:
+        local_atomic_output = local_output
+
+    torch.npu.synchronize()
+    local_atomic_output = local_atomic_output.cpu().contiguous()
+    tensor_to_file(local_atomic_output, local_atomic_golden_path(cfg, dst_rank))
+    print(
+        f"Generated local-atomic low golden for rank {dst_rank}: "
+        f"shape={tuple(local_atomic_output.shape)}, dtype={local_atomic_output.dtype}"
+    )
 
 
 def run_jobs(worker, cfg: Config, serial: bool) -> None:
@@ -336,6 +408,11 @@ def parse_args():
     parser.set_defaults(packed_pertoken_scale=True)
     parser.add_argument("--serial", action="store_true", help="Run file-communication and golden workers serially.")
     parser.add_argument("--clean-intermediate", action="store_true", help="Delete simulated A2A files after success.")
+    parser.add_argument(
+        "--local-atomic-golden",
+        action="store_true",
+        help="Also generate an FP16 low golden matching local write plus remote atomic add.",
+    )
     args = parser.parse_args()
 
     if args.transA != 0 or args.transB != 1:
@@ -348,6 +425,8 @@ def parse_args():
         raise ValueError(f"local k={args.k} must be divisible by {KERNEL_LOCAL_K_ALIGN}")
     if args.scale_exp_low > args.scale_exp_high:
         raise ValueError("scale-exp-low must be <= scale-exp-high")
+    if args.local_atomic_golden and args.out_dtype != DataType.FLOAT16:
+        raise ValueError("local-atomic golden currently requires FLOAT16 output")
 
     if args.device_id_list:
         device_ids = tuple(int(item) for item in args.device_id_list.split(",") if item != "")
@@ -374,6 +453,7 @@ def parse_args():
         device_ids=device_ids,
         packed_pertoken_scale=args.packed_pertoken_scale,
         keep_intermediate=not args.clean_intermediate,
+        generate_local_atomic_golden=args.local_atomic_golden,
     ), args.serial
 
 

@@ -11,3 +11,9 @@ catccos_example_add_executable(
     SOURCES main.cpp
     COMPILE_DEFINITIONS CATLASS_ARCH=3510
 )
+
+catccos_example_add_executable(
+    ascend950_mxfp8_alltoall_matmul_split_k_urma_local_atomic
+    SOURCES main.cpp
+    COMPILE_DEFINITIONS CATLASS_ARCH=3510 CATCCOS_LOCAL_ATOMIC=1
+)

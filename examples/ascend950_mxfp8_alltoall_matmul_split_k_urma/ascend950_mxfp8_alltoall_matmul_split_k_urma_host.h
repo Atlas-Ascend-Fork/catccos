@@ -14,6 +14,18 @@
 #include "catlass/detail/alignment.hpp"
 #include "operator_registry.h"
 
+namespace SplitKUrmaExample {
+#if defined(CATCCOS_LOCAL_ATOMIC)
+inline constexpr bool IS_LOCAL_ATOMIC = true;
+inline constexpr auto OPERATOR_NAME = "Ascend950MxFp8AllToAllMatmulSplitKUrmaLocalAtomic";
+inline constexpr auto EXECUTABLE_NAME = "ascend950_mxfp8_alltoall_matmul_split_k_urma_local_atomic";
+#else
+inline constexpr bool IS_LOCAL_ATOMIC = false;
+inline constexpr auto OPERATOR_NAME = "Ascend950MxFp8AllToAllMatmulSplitKUrma";
+inline constexpr auto EXECUTABLE_NAME = "ascend950_mxfp8_alltoall_matmul_split_k_urma";
+#endif
+} // namespace SplitKUrmaExample
+
 class Ascend950MxFp8AllToAllMatmulSplitKUrmaOperator : public CatccosOperator {
 public:
     void AllocateDeviceSpace(
@@ -144,6 +156,6 @@ public:
     }
 };
 
-REGISTER_OPERATOR("Ascend950MxFp8AllToAllMatmulSplitKUrma", Ascend950MxFp8AllToAllMatmulSplitKUrmaOperator);
+REGISTER_OPERATOR(SplitKUrmaExample::OPERATOR_NAME, Ascend950MxFp8AllToAllMatmulSplitKUrmaOperator);
 
 #endif // ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA_HOST_H

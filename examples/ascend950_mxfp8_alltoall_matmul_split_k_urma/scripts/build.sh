@@ -19,6 +19,26 @@ source "$PROJECT_ROOT/examples/utils/setup.sh" -soc_type Ascend950 || {
 
 SOURCE_DIR=$PROJECT_ROOT
 BUILD_DIR=$PROJECT_ROOT/build
+BUILD_VARIANT=${1:-default}
+case "$BUILD_VARIANT" in
+    default)
+        BUILD_TARGETS=(ascend950_mxfp8_alltoall_matmul_split_k_urma)
+        ;;
+    local_atomic)
+        BUILD_TARGETS=(ascend950_mxfp8_alltoall_matmul_split_k_urma_local_atomic)
+        ;;
+    all)
+        BUILD_TARGETS=(
+            ascend950_mxfp8_alltoall_matmul_split_k_urma
+            ascend950_mxfp8_alltoall_matmul_split_k_urma_local_atomic
+        )
+        ;;
+    *)
+        echo "Usage: $0 [default|local_atomic|all]"
+        exit 1
+        ;;
+esac
+
 mkdir -p "$BUILD_DIR"
 cmake -B "$BUILD_DIR" -S "$SOURCE_DIR" -DCATCCOS_BUILD_TESTS=OFF -DCATLASS_BISHENG_ARCH=a5
-cmake --build "$BUILD_DIR" --target ascend950_mxfp8_alltoall_matmul_split_k_urma -j
+cmake --build "$BUILD_DIR" --target "${BUILD_TARGETS[@]}" -j
