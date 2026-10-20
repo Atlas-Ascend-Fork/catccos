@@ -427,8 +427,9 @@ struct TileRemoteCopy<
             (__gm__ uint8_t*)dstTensor.GetPhyAddr(), (__gm__ uint8_t*)srcTensor.GetPhyAddr(),
             (__ubuf__ uint8_t*)tmpUb.GetPhyAddr(), messageLen, peerIdx, copyEventId);
 
-        // PIPE_MTE3 has consumed tmpUb on return; quiet also completes the GM payload.
-        aclshmemx_udma_quiet(peerIdx);
+        // The NBI call has consumed tmpUb, but the GM payload is still in flight.
+        // The kernel must quiet this peer before consuming the destination,
+        // reusing either GM buffer, or publishing completion.
     }
 };
 
@@ -494,8 +495,9 @@ struct TileRemoteCopy<
             (__gm__ uint8_t*)dstTensor.GetPhyAddr(), (__gm__ uint8_t*)srcTensor.GetPhyAddr(),
             (__ubuf__ uint8_t*)tmpUb.GetPhyAddr(), messageLen, peerIdx, copyEventId);
 
-        // PIPE_MTE3 has consumed tmpUb on return; quiet also completes the GM payload.
-        aclshmemx_udma_quiet(peerIdx);
+        // The NBI call has consumed tmpUb, but the GM payload is still in flight.
+        // The kernel must quiet this peer before consuming the destination,
+        // reusing either GM buffer, or publishing completion.
     }
 };
 

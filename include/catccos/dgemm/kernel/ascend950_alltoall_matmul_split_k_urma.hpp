@@ -402,6 +402,9 @@ public:
                 udmaAllToAllScale(
                     gmScaleBlockSrc, layoutScaleBlockSrc, gmScaleBlockDst, layoutScaleBlockDst, actualScaleCommShape,
                     remoteRankIdx);
+                // AIC consumes A and its scales together after the rank barrier.
+                // Both requests use the same peer queue, so one quiet completes them.
+                aclshmemx_udma_quiet(remoteRankIdx);
             }
 
             aclshmemx_barrier_all_vec();

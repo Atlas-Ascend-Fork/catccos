@@ -290,7 +290,8 @@ public:
     CommBlock(Catlass::Arch::Resource<ArchTag>& resource)
     {
         // Current kernels run MTE and UDMA on separate AIVs.
-        // Sequential UDMA blocks can reuse it after each Tile call's quiet.
+        // Sequential UDMA blocks can reuse WQE scratch when the NBI call returns.
+        // GM payload completion is managed by the kernel.
         size_t ubOffset = 0;
         for (uint32_t i = 0; i < UB_STAGES; ++i) {
             ubSList[i] = resource.ubBuf.template GetBufferByByte<ElementDst>(ubOffset);

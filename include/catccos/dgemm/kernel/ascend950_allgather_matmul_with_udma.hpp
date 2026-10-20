@@ -324,6 +324,8 @@ public:
 
                     udmaAllGather(
                         gmBlockSrc, layoutBlockSrc, gmBlockDst, layoutBlockDst, udmaActualShape, remoteRankIdx);
+                    // Complete this stage before the rank barrier publishes it to AIC.
+                    aclshmemx_udma_quiet(remoteRankIdx);
                 }
             }
 

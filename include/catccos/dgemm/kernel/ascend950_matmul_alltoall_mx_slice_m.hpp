@@ -362,7 +362,7 @@ public:
         GemmCoord mmadBlockShape = GemmCoord{L1_TILE_M, L1_TILE_N, L1_TILE_K};
         GemmCoord problemShapeInRank = params.problemShape.GetCoordMNK();
 
-        BlockComm blockRemoteCopy;
+        BlockComm blockRemoteCopy(resource);
         uint32_t commShapeM = params.commInterval * L1_TILE_M;
         auto layoutTagSymmetric =
             Catlass::layout::RowMajor::MakeLayout<ElementC>(commShapeM * params.rankSize, problemShapeInRank.n());
@@ -417,10 +417,24 @@ public:
                 }
             }
 
-            if (commIdx < commLoops - WORKSPACE_STAGES && commLoops >= WORKSPACE_STAGES) {
+            if (commIdx + WORKSPACE_STAGES < commLoops) {
+                // Finish remote reads before any AIC can overwrite this source stage.
+                if (subcoreIdx == 0 && aicoreIdx < params.rankSize && aicoreIdx != params.rankIdx) {
+                    aclshmemx_udma_quiet(aicoreIdx);
+                }
                 aclshmemx_barrier_all_vec();
                 Catlass::Arch::CrossCoreSetFlag<0x2, PIPE_MTE3>(flagAivFinishCompute[stageIdx]);
             }
+        }
+
+        // The remaining stages are not reused and write disjoint output rows.
+        // Batch their completion here (all rounds when commLoops <= WORKSPACE_STAGES).
+        if (commLoops > 0) {
+            if (subcoreIdx == 0 && aicoreIdx < params.rankSize && aicoreIdx != params.rankIdx) {
+                aclshmemx_udma_quiet(aicoreIdx);
+            }
+            // Keep every rank's source workspace alive until all remote reads finish.
+            aclshmemx_barrier_all_vec();
         }
     }
 

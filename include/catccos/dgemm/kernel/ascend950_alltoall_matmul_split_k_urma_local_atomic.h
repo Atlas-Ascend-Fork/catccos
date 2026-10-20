@@ -369,8 +369,8 @@ public:
         uint64_t aWorkspaceBytes = static_cast<uint64_t>(WORKSPACE_STAGES) * aStageStride *
                                    Catlass::SizeOfBits<ElementA>::value / Catlass::SizeOfBits<uint8_t>::value;
 
-        BlockUdmaAllToAll udmaAllToAll;
-        BlockUdmaAllToAllScale udmaAllToAllScale;
+        BlockUdmaAllToAll udmaAllToAll(resource);
+        BlockUdmaAllToAllScale udmaAllToAllScale(resource);
 
         AscendC::GlobalTensor<ElementA> gmA;
         gmA.SetGlobalBuffer(params.ptrA);
@@ -423,6 +423,9 @@ public:
                 udmaAllToAllScale(
                     gmScaleBlockSrc, layoutScaleBlockSrc, gmScaleBlockDst, layoutScaleBlockDst, actualScaleCommShape,
                     remoteRankIdx);
+                // AIC consumes A and its scales together after the rank barrier.
+                // Both requests use the same peer queue, so one quiet completes them.
+                aclshmemx_udma_quiet(remoteRankIdx);
             }
 
             aclshmemx_barrier_all_vec();
