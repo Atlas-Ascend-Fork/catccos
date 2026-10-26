@@ -55,4 +55,4 @@ jobs:
     if: "${{ default() }}"
     runs-on: [self-hosted, arch=x64, spec=xlarge]
     container:
-      image: swr.cn-north-4.myhuaweicloud.com/hw-ascend/ascend-catccos-dsl:9.1.0-950-py3.11
+      image: swr.cn-north-4.myhuaweicloud.com/hw-ascend/ascend-catccos-dsl:9.2.0-950-py3.11-0.01
