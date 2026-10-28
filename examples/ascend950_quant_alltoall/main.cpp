@@ -136,6 +136,10 @@ int main(int argc, char** argv)
     int32_t deviceId = options.deviceIdList[rankId];
 
     CocTilingParams cocTiling = SetupTilingParams(options.m, options.n, options.k);
+    if (!QuantAllToAllOperator::CheckProblemShape(rankSize, cocTiling)) {
+        std::cerr << "[ERROR] M, N and K must be positive, and M * N * K must be divisible by rankSize\n";
+        return 1;
+    }
 
     ACL_CHECK(aclInit(nullptr));
     ACL_CHECK(aclrtSetDevice(deviceId));

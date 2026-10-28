@@ -8,6 +8,16 @@
 
 class QuantAllToAllOperator : public CatccosOperator {
 public:
+    static bool CheckProblemShape(uint32_t rankSize, const CocTilingParams& cocTiling)
+    {
+        if (rankSize == 0 || rankSize > MAX_RANK_SIZE || cocTiling.m == 0 || cocTiling.n == 0 || cocTiling.k == 0) {
+            return false;
+        }
+        // Reduce before multiplying by K to avoid overflowing the three-factor product.
+        uint64_t remainder = static_cast<uint64_t>(cocTiling.m) * cocTiling.n % rankSize;
+        return remainder * cocTiling.k % rankSize == 0;
+    }
+
     void AllocateDeviceSpace(
         KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
@@ -49,6 +59,9 @@ public:
 
     bool CheckCocTilingParams(uint32_t rankSize, const CocTilingParams& cocTiling) override
     {
+        if (!CheckProblemShape(rankSize, cocTiling)) {
+            return false;
+        }
         auto blockCount = MAX_BLOCK_COUNT;
         uint32_t commInterval = cocTiling.commInterval;
         int32_t maxPeerMemPerRank = SHMEM_BUFF_BYTES / sizeof(uint16_t) / rankSize / blockCount;

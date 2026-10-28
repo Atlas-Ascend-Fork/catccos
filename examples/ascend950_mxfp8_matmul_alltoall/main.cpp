@@ -36,7 +36,7 @@ using DeviceOp = Config::Device;
 
 struct Options {
     static constexpr auto HELPER =
-        "Usage: ascend950_mxfp8_matmul_alltoall rank_size rank_id ip_port m n k [device_id_list]\n";
+        "Usage: ascend950_mxfp8_matmul_alltoall rank_size rank_id ip_port m n k data_path [device_id_list]\n";
 
     int rankSize;
     int rankId;
@@ -61,13 +61,21 @@ struct Options {
             INDEX_MAX
         };
 
-        if (argc > static_cast<int>(ArgsIndex::INDEX_MAX)) {
+        if (argc <= static_cast<int>(ArgsIndex::DATA_PATH_INDEX) || argc > static_cast<int>(ArgsIndex::INDEX_MAX)) {
             printf(HELPER);
             return -1;
         }
 
         rankSize = std::atoi(argv[static_cast<int>(ArgsIndex::RANK_SIZE_INDEX)]);
+        if (rankSize <= 0 || rankSize > MAX_RANK_SIZE) {
+            std::cerr << "rankSize must be in [1, " << MAX_RANK_SIZE << "]" << std::endl;
+            return -1;
+        }
         rankId = std::atoi(argv[static_cast<int>(ArgsIndex::RANK_ID_INDEX)]);
+        if (rankId < 0 || rankId >= rankSize) {
+            std::cerr << "rankId must be in [0, rankSize)" << std::endl;
+            return -1;
+        }
         ipPort = argv[static_cast<int>(ArgsIndex::IP_PORT_INDEX)];
         m = std::atoi(argv[static_cast<int>(ArgsIndex::M_INDEX)]);
         n = std::atoi(argv[static_cast<int>(ArgsIndex::N_INDEX)]);
@@ -82,6 +90,10 @@ struct Options {
             for (size_t i = 0; i < rankSize; ++i) {
                 deviceIdList.push_back(i);
             }
+        }
+        if (static_cast<size_t>(rankId) >= deviceIdList.size()) {
+            std::cerr << "device_id_list does not contain rankId " << rankId << std::endl;
+            return -1;
         }
         return 0;
     }
@@ -105,12 +117,6 @@ int main(int argc, char** argv)
     uint32_t k = options.k;
     int32_t deviceId = options.deviceIdList[rankId];
 
-    // Validate: M must be divisible by rankSize
-    if (m % rankSize != 0) {
-        std::cerr << "[ERROR] M (" << m << ") must be divisible by rankSize (" << rankSize << ")\n";
-        return 1;
-    }
-
     CocTilingParams cocTiling;
     cocTiling.m = m;
     cocTiling.n = n;
@@ -125,6 +131,11 @@ int main(int argc, char** argv)
     cocTiling.commDataSplit = 32;
     cocTiling.commBlockM = 64;
     cocTiling.rankSize = rankSize;
+    if (!Ascend950MxFp8MatmulAllToAllOperator::CheckProblemShape(rankSize, cocTiling, Config::Kernel::L1_TILE_N)) {
+        std::cerr << "[ERROR] M, N and K must be positive, and N must be divisible by rankSize * N0 ("
+                  << static_cast<uint64_t>(rankSize) * Config::Kernel::L1_TILE_N << ")\n";
+        return 1;
+    }
 
     std::cout << "[TEST] input rank_size: " << rankSize << " rank_id:" << rankId << " input_ip: " << ipPort << "\n";
 

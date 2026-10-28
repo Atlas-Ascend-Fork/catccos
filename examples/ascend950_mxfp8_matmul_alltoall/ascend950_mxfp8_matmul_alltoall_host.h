@@ -16,6 +16,16 @@
 
 class Ascend950MxFp8MatmulAllToAllOperator : public CatccosOperator {
 public:
+    static bool CheckProblemShape(uint32_t rankSize, const CocTilingParams& cocTiling, uint32_t tileN)
+    {
+        if (rankSize == 0 || rankSize > MAX_RANK_SIZE || cocTiling.m == 0 || cocTiling.n == 0 || cocTiling.k == 0 ||
+            tileN == 0) {
+            return false;
+        }
+        // Each GEMM tile must fit entirely within one rank's N-slice.
+        return cocTiling.n % rankSize == 0 && (cocTiling.n / rankSize) % tileN == 0;
+    }
+
     void AllocateDeviceSpace(
         KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
@@ -125,8 +135,8 @@ public:
 
     bool CheckCocTilingParams(uint32_t rankSize, const CocTilingParams& cocTiling) override
     {
-        // M must be divisible by rankSize for uniform AllToAll
-        if (cocTiling.m % rankSize != 0) {
+        // The dynamic launcher falls back to N=128 tiles when an N=256 tile would cross a rank boundary.
+        if (!CheckProblemShape(rankSize, cocTiling, TILE_SHAPE_128)) {
             return false;
         }
         auto blockNum = platform_ascendc::PlatformAscendCManager::GetInstance()->GetCoreNumAic();
