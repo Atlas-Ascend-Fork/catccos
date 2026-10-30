@@ -1,0 +1,52 @@
+set(TLA_DIST_LIT_TOOL_HINTS
+  ${LLVM_TOOLS_BINARY_DIR}
+  "${TLA_DIST_ASCENDNPU_IR_ROOT}/build/install/bin"
+  "${TLA_DIST_ASCENDNPU_IR_ROOT}/build/bin"
+)
+
+find_program(TLA_DIST_FILECHECK_TOOL
+  NAMES FileCheck
+  HINTS ${TLA_DIST_LIT_TOOL_HINTS}
+)
+if(NOT TLA_DIST_FILECHECK_TOOL)
+  set(TLA_DIST_FILECHECK_TOOL FileCheck)
+endif()
+
+if(DEFINED LLVM_EXTERNAL_LIT AND EXISTS "${LLVM_EXTERNAL_LIT}")
+  set(TLA_DIST_LIT_RUNNER "${Python3_EXECUTABLE}" "${LLVM_EXTERNAL_LIT}")
+else()
+  find_program(TLA_DIST_LLVM_LIT_TOOL
+    NAMES llvm-lit lit
+    HINTS ${TLA_DIST_LIT_TOOL_HINTS}
+  )
+  if(TLA_DIST_LLVM_LIT_TOOL)
+    set(TLA_DIST_LIT_RUNNER "${TLA_DIST_LLVM_LIT_TOOL}")
+  else()
+    set(TLA_DIST_LIT_RUNNER
+      "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_BINARY_DIR}/run_lit.py"
+    )
+  endif()
+endif()
+
+set(TLA_DIST_LIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(TLA_DIST_LIT_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+set(TLA_DIST_LLVM_TOOLS_DIR "${LLVM_TOOLS_BINARY_DIR}")
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py"
+  @ONLY
+)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/run_lit.py.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/run_lit.py"
+  COPYONLY
+)
+
+add_custom_target(check-tla-dist-lit
+  COMMAND ${TLA_DIST_LIT_RUNNER} -sv "${CMAKE_CURRENT_BINARY_DIR}"
+  DEPENDS TlaDistCompile
+  WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+  COMMENT "Running ascend-catccos-dsl lit tests"
+)

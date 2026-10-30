@@ -1,0 +1,11 @@
+// RUN: sed 's/!tla.stride<32,1>/!tla.stride<32,2>/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SRC
+// RUN: sed '/src = tla.tensor_desc/s/stride\[%runtime_stride, %c1,/stride[%runtime_stride, %c8,/' %S/dynamic-gm-normalization.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SRC
+// RUN: sed '/dst = tla.tensor_desc/s/stride\[%runtime_stride, %c1,/stride[%runtime_stride, %c8,/' %S/dynamic-gm-normalization.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=DST
+// RUN: sed '/src = tla.tensor_desc/s/stride\[%runtime_stride, %c1,/stride[%runtime_stride, %runtime_stride,/' %S/dynamic-gm-normalization.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SRC
+// RUN: sed '/dst = tla.tensor_desc/s/stride\[%runtime_stride, %c1,/stride[%runtime_stride, %runtime_stride,/' %S/dynamic-gm-normalization.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=DST
+
+// A RowMajor type tag, even one claiming unit column stride, cannot override
+// the actual descriptor operands. Reject both known nonunit values and runtime
+// column strides that cannot be proven to be 1.
+// SRC: 'tla_dist.remote_copy' op requires src column stride of 1; dynamic strides must be provably 1
+// DST: 'tla_dist.remote_copy' op requires dst column stride of 1; dynamic strides must be provably 1

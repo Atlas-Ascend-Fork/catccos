@@ -39,8 +39,8 @@ repos:
     hooks:
       - id: bandit
         name: bandit (Python 安全漏洞检查)
+        additional_dependencies: ["bandit[toml]", "tomli==2.0.1"]
         types: [python]
-        additional_dependencies: ["tomli==2.0.1"]
         args: [
           "--config=pre-commit/pyproject.toml",
           "--quiet",

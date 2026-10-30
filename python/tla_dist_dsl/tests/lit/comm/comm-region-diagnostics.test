@@ -1,0 +1,32 @@
+// RUN: sed -n '/^\/\/ BEGIN_REMOTE_COPY$/,/^\/\/ END_REMOTE_COPY$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE_COPY.mlir && not %tla_dist_compile %t.REMOTE_COPY.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE_COPY
+// RUN: sed -n '/^\/\/ BEGIN_BARRIER_ALL$/,/^\/\/ END_BARRIER_ALL$/p' %s | sed '1d;$d;s|^// ||' > %t.BARRIER_ALL.mlir && not %tla_dist_compile %t.BARRIER_ALL.mlir -o - 2>&1 | %filecheck %s --check-prefix=BARRIER_ALL
+
+// REMOTE_COPY: error: 'tla_dist.remote_copy' op must be nested inside a tla.vector region
+// BARRIER_ALL: error: 'tla_dist.barrier_all' op must be nested inside a tla.vector region
+
+// BEGIN_REMOTE_COPY
+// !tile0 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 256>>
+// !tile1 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 256>>
+// module {
+//   tla.func @test(%dst: !tile0, %src: !tile0, %scratch_base: !tile0, %peer: i32) {
+//     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f32, ub, 256>
+//     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile1
+//     %copy_submit_0 = tla.flag "copy_submit_0" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
+//     tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_0 {mode = "get", transport = "mte"} : !tile0, !tile0, i32, !tile1, !tla.flag
+//     tla.return
+//   }
+// }
+// END_REMOTE_COPY
+
+// BEGIN_BARRIER_ALL
+// !tile0 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 256>>
+// !tile1 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 256>>
+// module {
+//   tla.func @test(%dst: !tile0, %src: !tile0, %scratch_base: !tile0, %peer: i32) {
+//     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f32, ub, 256>
+//     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile1
+//     tla_dist.barrier_all
+//     tla.return
+//   }
+// }
+// END_BARRIER_ALL

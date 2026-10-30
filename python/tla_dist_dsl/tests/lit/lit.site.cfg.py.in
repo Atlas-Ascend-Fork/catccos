@@ -1,0 +1,10 @@
+import lit.llvm
+
+config.tla_dist_lit_source_dir = "@TLA_DIST_LIT_SOURCE_DIR@"
+config.tla_dist_lit_binary_dir = "@TLA_DIST_LIT_BINARY_DIR@"
+config.tla_dist_compile_tool = "@TLA_DIST_DSL_COMPILE_TOOL@"
+config.llvm_tools_dir = "@TLA_DIST_LLVM_TOOLS_DIR@"
+config.filecheck_tool = "@TLA_DIST_FILECHECK_TOOL@"
+
+lit.llvm.initialize(lit_config, config)
+lit_config.load_config(config, "@TLA_DIST_LIT_SOURCE_DIR@/lit.cfg.py")

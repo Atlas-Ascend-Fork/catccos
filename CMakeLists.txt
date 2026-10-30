@@ -65,6 +65,11 @@ message(STATUS "Using bisheng compiler: ${CCEC}")
 
 add_subdirectory(examples)
 
+option(CATCCOS_ENABLE_TLA_DIST_DSL "Build the CATCCOS communication TLA DSL" OFF)
+if(CATCCOS_ENABLE_TLA_DIST_DSL)
+    add_subdirectory(python/tla_dist_dsl/csrc/mlir)
+endif()
+
 option(CATCCOS_BUILD_TESTS "Build tests/dynamic_tiling targets" OFF)
 if(CATCCOS_BUILD_TESTS)
     add_subdirectory(tests)

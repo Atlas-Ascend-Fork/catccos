@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.artifacts/
+/examples/fusion_ops/artifacts/
+csrc/mlir/build/
+dist/

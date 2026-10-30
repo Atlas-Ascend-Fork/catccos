@@ -91,14 +91,17 @@ run_test() {
 # 4. 准备 DSL 测试环境
 # ============================================================================
 
-# Catlass 构建脚本在子进程中设置此路径；这里也导出，使 pytest 和 lit 启动的
-# Python 进程能够导入 mlir.ir。
+# 按当前提交锁定的版本初始化依赖；失败时停止，避免后续构建和测试连锁报错。
+# 使用 -C 保证从任意目录调用脚本时，都更新指定工作区的子模块。
+run_test "submodules" git -C "${workspace}" submodule update --init 3rdparty/catlass 3rdparty/shmem
+if (( failed > 0 )); then
+  echo "ERROR: submodule initialization failed; cannot run DSL tests." >&2
+  exit "${failed}"
+fi
+
+# Catlass 自带 catlass._mlir；这里只配置共享的原生编译依赖路径。
 if [[ -z "${CATLASS_DSL_PREBUILT_ASCENDNPU_IR:-}" ]]; then
   export CATLASS_DSL_PREBUILT_ASCENDNPU_IR="${TLA_DSL_PREBUILT_ASCENDNPU_IR:-${workspace}/3rdparty/catlass/python/tla_dsl/3rdparty/AscendNPU-IR}"
-fi
-mlir_python="${CATLASS_DSL_PREBUILT_ASCENDNPU_IR}/build/install/python_packages/mlir_core"
-if [[ -d "${mlir_python}" ]]; then
-  export PYTHONPATH="${mlir_python}${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 export PYTHONPATH="${dsl_root}${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -116,6 +119,9 @@ if [[ "${dry_run}" == 0 ]]; then
   fi
 fi
 
+# CPU/IR 测试无需自动加载 NPU 后端，避免依赖容器中的 Ascend 驱动库。
+export TORCH_DEVICE_BACKEND_AUTOLOAD=0
+
 echo "AscendNPU-IR: ${CATLASS_DSL_PREBUILT_ASCENDNPU_IR}"
 
 # ============================================================================
@@ -125,7 +131,7 @@ echo "AscendNPU-IR: ${CATLASS_DSL_PREBUILT_ASCENDNPU_IR}"
 # 两类测试均先构建 DSL；ir 运行前端 pytest，lit 运行编译器 lit 测试。
 run_test "dsl_build" bash "${dsl_root}/build.sh"
 if [[ "${mode}" == ir || "${mode}" == all ]]; then
-  run_test "mlir_import" python -c 'from mlir import ir'
+  run_test "mlir_import" python -c 'import catccos; from catlass._mlir import ir'
   run_test "dsl_ir" python -m pytest -q "${dsl_root}/tests" --ignore="${dsl_root}/tests/lit"
 fi
 if [[ "${mode}" == lit || "${mode}" == all ]]; then

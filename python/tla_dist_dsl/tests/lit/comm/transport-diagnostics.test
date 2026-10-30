@@ -1,0 +1,34 @@
+// RUN: split-file %s %t
+// RUN: sed 's/transport = "mte"/transport = "rdma"/g;s/<mte2>/<scalar>/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=RDMA
+// RUN: sed 's/transport = "mte"/transport = "sdma"/g;s/<mte2>/<temp>/g;s/<mte3>/<mte2>/g;s/<temp>/<mte3>/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SDMA
+// RUN: sed 's/transport = "mte"/transport = "udma"/g;s/<mte2>/<temp>/g;s/<mte3>/<scalar>/g;s/<temp>/<mte3>/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=UDMA
+// RUN: not %tla_dist_compile %t/scalar.mlir -o - 2>&1 | %filecheck %s --check-prefix=UDMA
+// RUN: not %tla_dist_compile %t/missing.mlir -o - 2>&1 | %filecheck %s --check-prefix=MISSING
+// RUN: sed 's/transport = "mte"/transport = "mte", wqe_pipe = "s"/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=WQE
+// RDMA: rdma device lowering is not implemented
+// SDMA: sdma device lowering is not implemented
+// UDMA: udma device lowering is not implemented
+// MISSING: requires both a UB scratch tensor and flag_value
+// WQE: wqe_pipe is only supported for UDMA
+
+//--- scalar.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+module {
+  tla.func @scalar_submit(%dst: !gm, %src: !gm, %peer: i32) {
+    "tla.vector"() ({
+      tla_dist.remote_copy %dst, %src, %peer {mode = "put", transport = "udma", wqe_pipe = "s"} : !gm, !gm, i32
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- missing.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+module {
+  tla.func @missing_scratch(%dst: !gm, %src: !gm, %peer: i32) {
+    "tla.vector"() ({
+      tla_dist.remote_copy %dst, %src, %peer {mode = "get", transport = "mte"} : !gm, !gm, i32
+    }) : () -> ()
+    tla.return
+  }
+}

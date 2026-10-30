@@ -50,6 +50,9 @@ out/
 best_result.csv
 best_result_sorted.csv
 
+# Example artifacts
+/python/tla_dist_dsl/examples/*/artifacts/
+
 # log文件
 *.log
 .codemate

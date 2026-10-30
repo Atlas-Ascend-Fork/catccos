@@ -1,0 +1,10 @@
+// RUN: %python %S/Inputs/generate_example_ir.py fusion_ops/matmul_reduce_scatter.py > %t.mlir
+// RUN: %tla_dist_compile %t.mlir -o - | %filecheck %s --implicit-check-not=tla_dist.
+
+// CHECK-DAG: func.func private @shmem_remote_get_gm_row_major_to_gm_row_major_float
+// CHECK-DAG: func.func private @shmem_barrier_all_vec()
+// CHECK: call @shmem_barrier_all_vec()
+// CHECK: hivm.hir.set_ctrl true at ctrl[6]
+// CHECK: call @shmem_remote_get_gm_row_major_to_gm_row_major_float(
+// CHECK: hivm.hir.set_ctrl false at ctrl[6]
+// CHECK: call @shmem_barrier_all_vec()

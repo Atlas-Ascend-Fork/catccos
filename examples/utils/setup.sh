@@ -88,10 +88,9 @@ fi
 
 if echo "$submodule_status" | grep -q '^[-+]'; then
     echo "Initializing and updating submodules..."
-    git submodule update --init --recursive || {
-        echo "[ERROR] Running git submodule update --init --recursive failed."
-        cd "$ORIGINAL_DIR"
-        return 1 2>/dev/null || exit 1
+    git submodule update --init || {
+        echo "[ERROR] Running git submodule update --init failed."
+        exit 1
     }
 else
     echo "Submodules already initialized and up to date. Skipping."

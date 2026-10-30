@@ -1,0 +1,16 @@
+// RUN: sed 's/mode = "put"/mode = "bad"/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=MODE
+// RUN: sed 's/transport = "mte"/transport = "invalid"/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=TRANSPORT
+// RUN: sed 's/id = 2 : i64/id = 8 : i64/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=EVENT
+// RUN: sed 's/#tla.pipe<mte3>/#tla.pipe<mte2>/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=PIPE
+// RUN: sed 's/tla_dist.remote_copy/tla_dist.remote_get_gm_to_gm/g' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=REMOVED
+// RUN: sed '/: !ub, !gm, i32$/s/mode = "get"/mode = "put"/' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=GM-TO-UB-MODE
+// RUN: sed '/: !gm, !ub, i32$/s/mode = "put"/mode = "get"/' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=UB-TO-GM-MODE
+// RUN: sed '/: !gm, !gm, i32,/s/mode = "get", //' %S/remote-copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=MISSING-MODE
+// MODE: mode must be 'put' or 'get'
+// TRANSPORT: transport must be 'mte', 'rdma', 'udma', or 'sdma'
+// EVENT: id must be -1 or in range 0..7
+// PIPE: flag_value has the wrong source/destination pipe direction
+// REMOVED: error: custom op 'tla_dist.remote_get_gm_to_gm' is unknown
+// GM-TO-UB-MODE: GM -> UB requires mode='get'
+// UB-TO-GM-MODE: UB -> GM requires mode='put'
+// MISSING-MODE: 'tla_dist.remote_copy' op requires attribute 'mode'

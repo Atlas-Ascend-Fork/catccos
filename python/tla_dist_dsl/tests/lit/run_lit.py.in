@@ -1,0 +1,4 @@
+import lit.main
+
+
+lit.main.main(builtin_params={})
