@@ -15,28 +15,23 @@ CATCCOS的分层结构如下所示(以AllGather Matmul为例)，这些组件针�
 
 ```c++
 // examples/allgather_matmul/allgather_matmul_host.h
-// 根据shape申请Device地址空间，如果是精度测试则通过dataFile将输入矩阵拷贝到申请的空间，如果是性能测试则将申请的空间全部赋值为1
-void AllocateDevicePtrAGMM(KernelParams &params, uint32_t m, uint32_t k, uint32_t n, uint32_t rankId, uint32_t rankSize, std::string dataFile = "");
+class AllGatherMatmulOperator : public CatccosOperator {
+public:
+    // 按 cocTiling 分配 Device 内存；dataFile 非空时读取输入，否则使用全 1 输入。
+    void AllocateDeviceSpace(
+        KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override;
 
-// 算子执行结束后，将Device空间计算结果拷贝到Host侧再保存到本地，用于结果验证。
-void WriteResultAGMM(const KernelParams &params, uint32_t m, uint32_t n, uint32_t rankSize, std::string dataFile);
+    // 将 Device 结果拷贝到 Host 并保存，供结果验证使用。
+    void WriteResultFile(
+        const KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override;
+};
 ```
 
 Device API调用说明
 
-```c++
-// examples/allgather_matmul/allgather_matmul_device.h
-// Kernel API接口入参说明。
-template <
-    class ElementA, class LayoutA,
-    class ElementB, class LayoutB,
-    class ElementC, class LayoutC
->
-CATLASS_GLOBAL
-void AllGatherMatmul(
-    uint64_t fftsAddr, GM_ADDR gmA, GM_ADDR gmB, GM_ADDR gmC, GM_ADDR symmetricPtr, CocTilingParams cocTiling
-);
+示例在 `examples/allgather_matmul/allgather_matmul_device.h` 的 `AllGatherMatmulConfig` 中组装计算和通信组件。下面的片段为结构示意，完整的类型定义与 padding 配置请参考该头文件。
 
+```c++
 // 第一步: 创建block层mmad
 // 参数
 using MmadDispatchPolicy = Catlass::Gemm::MmadAtlasA2Pingpong<true>;
@@ -46,8 +41,11 @@ using L0TileShape = Catlass::GemmShape<M0, N0, 64>;
 using AType = Catlass::Gemm::GemmType<ElementA, LayoutA>;
 using BType = Catlass::Gemm::GemmType<ElementB, LayoutB>;
 using CType = Catlass::Gemm::GemmType<ElementC, LayoutC>;
+using PaddingHelperB = typename Catccos::Padding::PaddingHelper<BType, EnablePadding_>;
+using ActualTypeB = typename PaddingHelperB::ActualType;
+using GlobalPaddingB = typename PaddingHelperB::GlobalPadding;
 using BlockMmad = Catlass::Gemm::Block::BlockMmad<
-    MmadDispatchPolicy, L1TileShape, L0TileShape, AType, BType, CType
+    MmadDispatchPolicy, L1TileShape, L0TileShape, AType, ActualTypeB, CType
 >;
 
 // 第二步：指定计算时的数据走位方式
@@ -76,6 +74,7 @@ using BlockCommScheduler = Catccos::Comm::Block::BlockCommSwizzle<IS_DYNAMIC, vo
 
 // 第五步：在kernel层将mmad和AllGather组合到一起
 using AllGatherMatmulKernel = DGemm::Kernel::AllGatherMatmul<
+    GlobalPaddingB,
     BlockMmad,
     BlockComm,
     BlockMmadScheduler,
@@ -83,40 +82,16 @@ using AllGatherMatmulKernel = DGemm::Kernel::AllGatherMatmul<
     WORKSPACE_STAGES
 >;
 
-// 第六步：构造AllGatherMatmulKernel的Params
-typename TileRemoteCopy::Params tileParams {
-    commTileShape
-};
-
-typename BlockComm::Params blockParams {
-    commBlockShape,
-    tileParams
-};
-
-typename BlockCommScheduler::Params swizzleParams {
-    commCoreSplit
-};
-
-typename AllGatherMatmulKernel::Params params {
-    problemShape,
-    rank, rankSize,
-    commInterval,
-    gmA, layoutA,
-    gmB, layoutB,
-    gmC, layoutC,
-    symmetricPtr,
-    blockParams,
-    swizzleParams
-};
-
-// 第七步：实例化一个Kernel，并执行该算子
-AllGatherMatmulKernel matmulCommKernel;
-matmulCommKernel(params);
+// 第六步：通过 DeviceDGemm 启动配置好的 Kernel。
+using DeviceOp = Catccos::DGemm::Device::DeviceDGemm<AllGatherMatmulKernel>;
 ```
+
+`DeviceOp::Arguments` 的构造、`Initialize` 和 `Run` 调用可参考 [allgather_matmul_wrapper.cpp](../../examples/allgather_matmul/allgather_matmul_wrapper.cpp) 的 `RunAgmmDeviceOp`。
+
 
 ## Kernel API
 
-Kernel层API是设备侧调用的入口，也是融合连续矩阵乘、通信数据搬运或其他操作的组合点。代码路径在include/catccos/dgemm/kernel下
+Kernel层API是设备侧调用的入口，也是融合连续矩阵乘、通信数据搬运或其他操作的组合点。代码路径在 `include/catccos/dgemm/kernel` 下。下面展示 `allgather_matmul.hpp` 中的声明；上面的示例使用 `allgather_matmul_with_local_mm_opt.hpp` 中带 `GlobalPaddingB` 参数的变体。
 
 ```cpp
 namespace Catccos::DGemm::Kernel {
@@ -227,7 +202,7 @@ public:
 
     static size_t GetWorkspaceSize(Arguments const &args);
     Catlass::Status Initialize(Arguments const &args, uint8_t *workspace = nullptr);
-    void Run(aclrtStream stream, uint32_t blockDim, uint64_t fftsAddr);
+    Catlass::Status Run(aclrtStream stream, uint32_t blockDim, uint64_t fftsAddr);
 };
 }
 ```
