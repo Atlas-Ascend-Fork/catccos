@@ -1,6 +1,6 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
-# torch 2.7.1/torch-npu 2.7.1 do not provide Python 3.14 wheels.
-# Please use Python >=3.10,<3.14 with this requirements file.
+# The constrained NumPy versions and pinned SciPy do not support Python 3.13.
+# Please use Python >=3.10,<3.13 with this requirements file.
 torch==2.7.1+cpu
 torch-npu==2.7.1.post8
 

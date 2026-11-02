@@ -43,7 +43,7 @@ catccos
 - 软件版本:
   - `gcc >= 7.5, < 13`（已测试`7.5`，`8.3`，`9.3`，`11.4`，建议使用9.3以上版本。）
   - `cmake >= 3.10`
-  - `python >= 3.10, < 3.14`（当前 `requirements.txt` 固定的 `torch==2.7.1+cpu` / `torch-npu==2.7.1.post8` 暂无 Python 3.14 wheel。）
+  - `python >= 3.10, < 3.13`（当前 `requirements.txt` 约束的 NumPy 和 SciPy 版本不支持 Python 3.13。）
 
 - CANN版本:
 
@@ -86,7 +86,7 @@ chmod +x Ascend-cann-toolkit_<version>_linux-<arch>.run
 
 注意：
 - 配置环境变量时，若 CANN 未安装到默认路径，需先配置 `ASCEND_HOME_PATH` 环境变量。
-- 若 conda 安装 CANN 后将默认 `python3` 升级到 3.14，请新建并激活 Python 3.10 到 3.13 的环境后再执行 `python3 -m pip install -r requirements.txt`。
+- 若 conda 安装 CANN 后将默认 `python3` 升级到 3.13 或更高版本，请新建并激活 Python 3.10 到 3.12 的环境后再执行 `python3 -m pip install -r requirements.txt`。
 - `bisheng`（clang 15.x）在 aarch64 上可能自动选择系统中最高版本的 GCC 后端，而不一定跟随 `update-alternatives`。若系统存在 GCC 14，请同时安装匹配的标准库开发包，例如 `sudo apt install libstdc++-14-dev`，否则首次构建 SHMEM 时可能出现 `fatal error: cstdint file not found` 等标准 C++ 头文件缺失错误。
 - 在部分 aarch64 系统 glibc 版本上，`bisheng` 可能触发 `/usr/include/aarch64-linux-gnu/bits/math-vector.h` 中 clang 相关的 NEON/SVE 向量声明兼容性问题。建议优先使用 CANN 配套或已验证的 OS / glibc 环境；若本地开发环境暂时无法调整，可通过在编译 include 路径前置一个本地 `bits/math-vector.h` 兼容 stub 作为临时规避，迁移到正式环境前应移除该 workaround。
 - 若使用 `examples` 下的编译脚本，可跳过此步骤（各算子 `build.sh` 会自动 source 并传入所需参数）。
