@@ -32,13 +32,15 @@ catccos
 
 - 硬件平台:
   - **CPU**: `aarch64`/`x86_64`
-  - **NPU**: `Atlas A2 训练系列产品`/`Atlas 800I A2 推理产品`/`A200I A2 Box 异构组件`/`Atlas 350 加速卡`
+  - **NPU**: `Atlas A2 训练系列产品`/`Atlas A3 训练系列产品`/`Atlas 800I A2 推理产品`/`A200I A2 Box 异构组件`/`Atlas 350 加速卡`
     - `Atlas 800T A2 训练服务器`
     - `Atlas 900 A2 PoD 集群基础单元`
     - `Atlas 200T A2 Box16 异构子框`
+    - `Atlas A3 训练系列产品`
     - `Atlas 800I A2 推理服务器`
     - `A200I A2 Box 异构组件`
     - `Atlas 350 加速卡`（`Ascend950PR`/`Ascend950DT`）
+  - 各算子的具体硬件支持范围以[算子总览](docs/operators.md)中的“硬件平台”列为准。
 
 - 软件版本:
   - `gcc >= 7.5, < 13`（已测试`7.5`，`8.3`，`9.3`，`11.4`，建议使用9.3以上版本。）
