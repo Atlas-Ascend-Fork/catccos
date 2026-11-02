@@ -60,7 +60,7 @@
 | MoE Dispatch GMM + Dequant + SwiGLU | `DispatchGmmDequantSwiglu` | AllToAllV | INT8 → FP16 | Atlas A2/A3 | `dgemm/kernel/alltoallv_gmm_dequant_v2.hpp` | [dispatch_gmm_dequant_swiglu](../examples/dispatch_gmm_dequant_swiglu/main.cpp)* |
 | GMM + AllToAllV v2 | `GMMAllToAllVV2` | AllToAllV | FP16 | Atlas A2/A3 | `dgemm/kernel/gmm_alltoallv_v2.hpp` | [gmm_alltoallv_v2](../examples/gmm_alltoallv_v2/README.md) |
 | MoE FFN Dispatch + Combine | `DispatchFFNCombine` | AllToAllV | FP16 | Atlas A2/A3 | `alltoallv_gmm_v2.hpp` + `gmm_alltoallv_v2.hpp` | [dispatch_ffn_combine](../examples/dispatch_ffn_combine/README.md) |
-| GroupedMatMul + AllToAllV（Small M） | `GroupedMatmulAllToAllvSmallM` | AllToAllV | FP16 | Atlas A2/A3 | `dgemm/kernel/grouped_matmul_alltoallv_small_m.hpp` | [grouped_matmul_alltoallv_small_m](../examples/grouped_matmul_alltoallv_small_m/main.cpp) |
+| GroupedMatMul + AllToAllV（Small M） | `GroupedMatmulAlltoAllvSmallM` | AllToAllV | FP16 | Atlas A2/A3 | `dgemm/kernel/grouped_matmul_alltoallv_small_m.hpp` | [grouped_matmul_alltoallv_small_m](../examples/grouped_matmul_alltoallv_small_m/main.cpp) |
 
 > `AllToAllVGMMV2` 被 `alltoallv_gmm_v2`、`dispatch_gmm`、`dispatch_gmm_swiglu` 三个示例共用 Registry 名，但 Device 实现不同（是否含 SwiGLU 等）。
 
