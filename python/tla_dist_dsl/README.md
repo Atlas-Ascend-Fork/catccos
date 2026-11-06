@@ -92,6 +92,7 @@ From the CATCCOS repository root, initialize the pinned sources:
 
 ```bash
 git submodule update --init 3rdparty/catlass 3rdparty/shmem
+git -C 3rdparty/catlass submodule update --init --recursive python/tla_dsl/3rdparty/AscendNPU-IR
 ```
 
 Use the Catlass and SHMEM revisions pinned by this repository, and the
@@ -102,11 +103,12 @@ SHMEM device headers, Python package and runtime library must use the same
 revision; build/install the pinned SHMEM package using its own instructions.
 NPU execution also requires compatible PyTorch and `torch_npu` installations.
 
-When building AscendNPU-IR from source, apply the pinned Catlass patches once
-before configuring it. From the CATCCOS repository root:
+Build the checked-out AscendNPU-IR following Catlass's
+[build guide](https://gitcode.com/cann/catlass/blob/76946bb3feb6efef4efb204a74fff44196b73c14/python/tla_dsl/docs/zh/dsl_development/build_guide/ascend_npu_ir.md).
+Apply the pinned Catlass patches once before configuring it. From the CATCCOS repository root:
 
 ```bash
-export CATLASS_DSL_ASCENDNPU_IR_ROOT=/path/to/AscendNPU-IR
+export CATLASS_DSL_ASCENDNPU_IR_ROOT="$PWD/3rdparty/catlass/python/tla_dsl/3rdparty/AscendNPU-IR"
 bash 3rdparty/catlass/python/tla_dsl/tools/patches/apply_patch.sh
 ```
 
@@ -120,7 +122,6 @@ From `python/tla_dist_dsl`, with the CANN environment activated:
 python -m pip install "pybind11==2.13.6"
 export ASCEND_HOME_PATH=/path/to/cann
 export BISHENG_COMPILER_PATH=/path/to/bisheng/bin
-export CATLASS_DSL_PREBUILT_ASCENDNPU_IR=/path/to/AscendNPU-IR
 bash build.sh
 python -m pip install -e .
 ```
@@ -144,7 +145,7 @@ The root CMake build also supports `-DCATCCOS_ENABLE_TLA_DIST_DSL=ON` and target
 `tla_dist-compiler`. CMake accepts `CATLASS_TLA_DSL_ROOT` and
 `TLA_DIST_DSL_SHMEM_ROOT` for compatible external source trees. `build.sh` uses
 the pinned Catlass submodule. A shared `CATLASS_DSL_PREBUILT_ASCENDNPU_IR`
-override is forwarded to Catlass's source/install settings; these can also be
+override is available for a matching external build and forwarded to Catlass's source/install settings; these can also be
 set individually with `CATLASS_DSL_ASCENDNPU_IR_ROOT` and
 `CATLASS_DSL_ASCENDNPU_IR_INSTALL_DIR`. Set `TLA_DIST_DSL_COMPILE` for an external compiler
 executable or `TLA_DIST_DSL_BASE_BITCODE` for custom templates matching the kernel
@@ -175,6 +176,7 @@ Torch owns the ACL lifecycle; SHMEM is finalized before the process group.
 With native MLIR Python bindings available:
 
 ```bash
+python -m pip install -e '.[test]'
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
 python -m pytest tests -q
 cmake --build csrc/mlir/build --target check-tla-dist-lit

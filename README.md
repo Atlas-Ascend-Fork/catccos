@@ -42,6 +42,8 @@ catccos
     - `Atlas 350 加速卡`（`Ascend950PR`/`Ascend950DT`）
   - 各算子的具体硬件支持范围以[算子总览](docs/operators.md)中的“硬件平台”列为准。
 
+  安装 CANN 时，请参考 [CANN 快速安装](https://www.hiascend.com/cann/download?versionId=794&ids=d803%2Ch0501%2Ch0601%2Ch0703&currentTab=1)，按版本、产品系列、CPU 架构和操作系统下载对应软件包，并执行页面提供的安装命令。不确定产品系列时，点击页面中的“我不知道硬件信息”按提示确认。
+
 - 软件版本:
   - `gcc >= 7.5, < 13`（已测试`7.5`，`8.3`，`9.3`，`11.4`，建议使用9.3以上版本。）
   - `cmake >= 3.10`
