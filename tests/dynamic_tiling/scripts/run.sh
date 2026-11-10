@@ -58,9 +58,10 @@ case "$NUM_ARGS" in
     ;;
 
   *)
-    echo "Error: invalid number of arguments: $NUM_ARGS"
-    usage
-    return 1
+    echo "Error: invalid number of arguments: $NUM_ARGS" >&2
+    echo "Usage: bash run.sh <kernel_name> <data_type> <device_list>" >&2
+    echo "   or: bash run.sh <kernel_name> <data_type> <test_start_line> <test_collect_rows> <device_list>" >&2
+    exit 1
     ;;
 esac
 
