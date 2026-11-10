@@ -63,8 +63,7 @@ def process_csv_files(folder_path):
             result_csv_files.append(os.path.join(root, "result.csv"))
 
     if not result_csv_files:
-        print("no result.csv file is found.")
-        return
+        raise ValueError(f"No result.csv file found in {folder_path}")
 
     df_list = []
     required_columns = [
@@ -94,8 +93,7 @@ def process_csv_files(folder_path):
             print(f"read {file} error occurred: {e}")
 
     if not df_list:
-        print("No valid CSV file was read")
-        return
+        raise ValueError("No valid result.csv file was read")
 
     # 合并所有CSV数据
     all_data = pd.concat(df_list, ignore_index=True)
