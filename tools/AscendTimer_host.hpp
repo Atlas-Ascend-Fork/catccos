@@ -34,7 +34,11 @@
 class AscendTimerHost {
 public:
     // ========== 常量定义 ==========
-    static constexpr float kCycleToTimeBase = 50.0f;       // 周期转微秒的基准值
+#ifdef ASCEND_TIMER_CYCLES_PER_US
+    static constexpr float kCycleToTimeBase = ASCEND_TIMER_CYCLES_PER_US;
+#else
+    static constexpr float kCycleToTimeBase = 50.0f;
+#endif
     static constexpr int kCoresPerGroup = 3;               // 每组的核数
     static constexpr int kSubGroupIdForAIC = 0;            // AIC 的子组 ID
     static inline int runtimePlatformCoreNum_ = BLOCK_NUM; // GetCoreNum() 返回值，等价于原 BLOCK_NUM

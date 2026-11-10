@@ -61,7 +61,12 @@ function(catccos_example_add_executable TARGET)
 
     set(PROFILING_FLAGS "")
     if(ENABLE_TIMER)
-        set(PROFILING_FLAGS -DENABLE_TIMER --cce-aicore-block-local-init)
+        set(PROFILING_FLAGS -DENABLE_TIMER)
+        # dav-c310 rejects implicit block-local initialization. KernelAdapter
+        # explicitly sets the timer pointer before every operator invocation.
+        if(NOT CATLASS_BISHENG_ARCH STREQUAL "a5")
+            list(APPEND PROFILING_FLAGS --cce-aicore-block-local-init)
+        endif()
     endif()
 
     if("${CATLASS_BISHENG_ARCH}" STREQUAL "a5")
@@ -273,6 +278,7 @@ foreach(EXAMPLE
     ascend950_allgather_matmul
     ascend950_alltoall_matmul
     ascend950_mxfp8_alltoall_matmul_split_k_urma
+    ascend950_mxfp8_alltoall_matmul
     allgather_matmul_remote_read
     ascend950_matmul_alltoall
     matmul_reduce_scatter

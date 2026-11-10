@@ -26,6 +26,7 @@ class CommBlock {
 #include "catccos/comm/block/comm_block_to_local_mem.hpp"
 #include "catccos/comm/block/comm_block_to_share_mem.hpp"
 #include "catccos/comm/block/comm_block_remote_copy.hpp"
+#include "catccos/comm/block/comm_block_hierarchical_copy.hpp"
 #include "catccos/comm/block/comm_block_remote_chunk_copy.hpp"
 #include "catccos/comm/block/comm_block_local_copy.hpp"
 #include "catccos/comm/block/comm_block_rdma_copy.hpp"

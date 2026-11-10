@@ -53,7 +53,8 @@ inline constexpr int FIXED_TIMING_COUNT = static_cast<int>(FixedTiming::FIXED_TI
     X(AIV_RS)                     \
     X(AIV_AG)                     \
     X(AIV_LOCAL_COPY)             \
-    // 继续添加
+    X(AIC_WAIT)                   \
+    X(AIV_WAIT)
 
 enum class DynamicTimingType : int {
 #define X(name) name,
@@ -74,7 +75,12 @@ inline constexpr int DYNAMIC_TYPE_COUNT_ENUM = static_cast<int>(DynamicTimingTyp
 
 // 所有动态项默认最大迭代次数
 // 注意：存储 start/end 分开，因此每个事件需要 2 个存储 slot
+#ifdef ASCEND_TIMER_MAX_DYNAMIC_ITER
+inline constexpr int MAX_DYNAMIC_ITER = ASCEND_TIMER_MAX_DYNAMIC_ITER;
+#else
 inline constexpr int MAX_DYNAMIC_ITER = 150;
+#endif
+static_assert(MAX_DYNAMIC_ITER > 0 && MAX_DYNAMIC_ITER <= 32767, "timer count must fit int16_t");
 
 // CPU端：对齐相关常量（128字节(16元素)对齐，避免多核写一个cache line）
 // 每核原始计数器数 = 固定项*2(START/END) + 动态类型*最大迭代*2(START/END)

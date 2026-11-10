@@ -15,7 +15,7 @@
 namespace Catccos::detail {
 
 enum class CopyDirect { Put, Get };
-enum class CopyTransport { Mte, Rdma, Udma };
+enum class CopyTransport { Mte, Rdma, Udma, None };
 
 } // namespace Catccos::detail
 
