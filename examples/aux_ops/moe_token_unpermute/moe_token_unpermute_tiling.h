@@ -41,6 +41,10 @@ __forceinline__[host, aicore] void MoeTokenUnpermuteTiling(
     tilingData.tokens_splited_length = tilingData.tokens_core_length < static_cast<int64_t>(600) ?
                                            tilingData.tokens_core_length :
                                            static_cast<int64_t>(600);
+    // Some AIVs own no complete row when outTokens < coreNum.
+    if (tilingData.tokens_splited_length == 0) {
+        tilingData.tokens_splited_length = 1;
+    }
     tilingData.tokens_splited_num =
         static_cast<int64_t>(tilingData.tokens_core_length / tilingData.tokens_splited_length);
     tilingData.tokens_splited_remain =

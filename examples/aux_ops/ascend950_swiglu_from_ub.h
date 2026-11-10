@@ -13,6 +13,7 @@
 #define CATCCOS_EXAMPLES_AUX_OPS_ASCEND950_SWIGLU_FROM_UB_H
 
 #include <type_traits>
+#include "catccos/detail/ascend950_moe_ready.hpp"
 
 #include "catccos/comm/block/comm_block_mx_quant.hpp"
 #include "catlass/arch/cross_core_sync.hpp"
@@ -225,7 +226,7 @@ public:
         ((UB_TILE_N + kElementPerBlock - 1) / kElementPerBlock) * kElementPerBlock;
     static constexpr uint32_t kUbTileElem = UB_TILE_M * kUbTileNAlign;
     static constexpr uint32_t kUbPlaneBytes = kUbTileElem * sizeof(ElementC);
-    static constexpr uint32_t kReadyStride = 16;
+    static constexpr uint32_t kReadyStride = Catccos::Detail::Ascend950MoeReady::kStride;
     static constexpr bool kUseTileWideMxQuant = UB_TILE_M == 256;
     static_assert(UB_TILE_M == 128 || UB_TILE_M == 256, "Unsupported GMM1 UB tile height");
     static_assert(std::is_same_v<ElementC, bfloat16_t>, "SwiGLU MX quant currently consumes BF16 GMM output");

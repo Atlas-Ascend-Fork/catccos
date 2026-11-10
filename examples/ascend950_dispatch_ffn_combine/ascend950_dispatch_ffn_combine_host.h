@@ -13,6 +13,7 @@
 #define ASCEND950_DISPATCH_FFN_COMBINE_HOST_H
 
 #include "operator_registry.h"
+#include "catccos/detail/ascend950_moe_ready.hpp"
 
 class Ascend950DispatchFFNCombineOperator : public CatccosOperator {
 public:
@@ -152,10 +153,13 @@ public:
             RoundUp<size_t>(maxOutputSize * cocTiling.k * sizeof(fp16_t), 512) + RoundUp<size_t>(metaInfoSize, 512) +
             RoundUp<size_t>(maxOutputSize * cocTiling.k, 512) +
             RoundUp<size_t>(maxOutputSize * RoundUp<size_t>(CeilDev(cocTiling.k, 32), 2), 512) +
-            RoundUp<size_t>(maxOutputSize * (cocTiling.n / 2) * sizeof(fp16_t), 512) +
+            Catccos::Detail::Ascend950MoeReady::SwigluRegionBytes(
+                maxOutputSize * (cocTiling.n / 2) * sizeof(fp16_t), expertPerRank) +
             RoundUp<size_t>(maxOutputSize * (cocTiling.n / 2), 512) +
             RoundUp<size_t>(maxOutputSize * RoundUp<size_t>(CeilDev(cocTiling.n / 2, 32), 2), 512) +
-            RoundUp<size_t>(maxOutputSize * cocTiling.k * sizeof(fp16_t), 512) + RoundUp<size_t>(metaInfoSize, 512);
+            Catccos::Detail::Ascend950MoeReady::DispatchRegionBytes(
+                maxOutputSize * cocTiling.k * sizeof(fp16_t), EP, expertPerRank) +
+            RoundUp<size_t>(metaInfoSize, 512);
         return workspaceSize;
     }
 
@@ -167,6 +171,10 @@ public:
     bool CheckCocTilingParams(uint32_t rankSize, const CocTilingParams& cocTiling) override
     {
         if (!CheckMoeCocTilingParams(cocTiling)) {
+            return false;
+        }
+        if (cocTiling.topK > cocTiling.expertNum) {
+            std::cerr << "TopK must not exceed the global expert count" << std::endl;
             return false;
         }
         if (rankSize != cocTiling.epSize) {
@@ -181,6 +189,17 @@ public:
         }
         if (cocTiling.k % 256 != 0 || cocTiling.n % 512 != 0) {
             std::cerr << "MXFP8 FFN requires K % 256 == 0 and N % 512 == 0" << std::endl;
+            return false;
+        }
+        size_t expandedM = static_cast<size_t>(cocTiling.m) * cocTiling.topK;
+        size_t scaleK = RoundUp<size_t>(CeilDev(cocTiling.k, 32), 2);
+        size_t symmetricBytes =
+            RoundUp<size_t>(expandedM * cocTiling.k * sizeof(fp16_t), 512) +
+            RoundUp<size_t>(expandedM * RoundUp<size_t>(cocTiling.k + scaleK, 32), 512) +
+            RoundUp<size_t>(
+                static_cast<size_t>(rankSize) * rankSize * (cocTiling.expertNum / rankSize) * sizeof(int32_t), 512);
+        if (symmetricBytes > SHMEM_BUFF_BYTES) {
+            std::cerr << "Packed input and BF16 return regions exceed symmetric buffer capacity" << std::endl;
             return false;
         }
         return true;

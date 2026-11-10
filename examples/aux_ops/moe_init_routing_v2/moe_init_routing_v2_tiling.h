@@ -334,6 +334,10 @@ void MoeInitRoutingV2TilingBase::Tiling4SrcToDstCompute()
     int64_t perLoopMaxRows = (aicoreParams_.ubSize - ASSIST_NUM * sizeof(float) - aivNum * SORT32_ALIGN_ELEMENT) /
                              (SORT32_ALIGN_ELEMENT * NUM_TWO) / NUM_TWO;
     int64_t perCoreRows = CeilDiv(totalLength, aivNum);
+    // A tiny Sort32 run owns one count/inverse-index partition.
+    if (totalLength > 0 && totalLength <= SORT32_ALIGN_ELEMENT) {
+        perCoreRows = totalLength;
+    }
     if (perCoreRows <= 0) {
         tilingData->needCoreNum = 0;
         return;

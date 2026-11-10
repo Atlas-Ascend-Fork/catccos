@@ -16,9 +16,11 @@ else()
 endif()
 
 # List of operators that support PyTorch binding
-set(CATCCOS_TORCH_SUPPORTED
-    allgather_matmul
-)
+if(CATLASS_BISHENG_ARCH STREQUAL "a5")
+    set(CATCCOS_TORCH_SUPPORTED ascend950_dispatch_ffn_combine)
+else()
+    set(CATCCOS_TORCH_SUPPORTED allgather_matmul)
+endif()
 
 add_custom_target(catccos_examples)
 

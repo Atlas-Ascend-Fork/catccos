@@ -1,5 +1,3 @@
-
-
 /**
  * Copyright (c) 2026 Huawei Technologies Co., Ltd.
  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
@@ -17,6 +15,7 @@
 
 namespace catccos::meta {
 
+#ifndef CATCCOS_TORCH_A5
 at::Tensor allgather_matmul_meta(const at::Tensor& a, const at::Tensor& b, int64_t rank_size)
 {
     auto a_sizes = a.sym_sizes();
@@ -27,7 +26,25 @@ at::Tensor allgather_matmul_meta(const at::Tensor& a, const at::Tensor& b, int64
     };
     return at::empty_symint(out_shape, a.options());
 }
+#else
+at::Tensor ascend950_dispatch_ffn_combine_meta(
+    const at::Tensor& x, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
+    const at::Tensor&)
+{
+    auto x_sizes = x.sym_sizes();
+    std::vector<c10::SymInt> out_shape = {x_sizes[0], x_sizes[1]};
+    return at::empty_symint(out_shape, x.options());
+}
+#endif
 
 } // namespace catccos::meta
 
-TORCH_LIBRARY_IMPL(catccos, Meta, m) { m.impl("allgather_matmul", &catccos::meta::allgather_matmul_meta); }
+TORCH_LIBRARY_IMPL(catccos, Meta, m)
+{
+#ifndef CATCCOS_TORCH_A5
+    m.impl("allgather_matmul", &catccos::meta::allgather_matmul_meta);
+#endif
+#ifdef CATCCOS_TORCH_A5
+    m.impl("ascend950_dispatch_ffn_combine", &catccos::meta::ascend950_dispatch_ffn_combine_meta);
+#endif
+}

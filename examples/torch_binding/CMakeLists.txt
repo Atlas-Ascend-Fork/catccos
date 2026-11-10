@@ -27,6 +27,7 @@ set(TORCH_BINDING_INCLUDES
 
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/3rdparty/catlass/include
     ${CMAKE_SOURCE_DIR}/examples
     ${CMAKE_SOURCE_DIR}/utils
 
@@ -49,6 +50,10 @@ set_target_properties(catccos_torch PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
 )
 
+
+if(CATLASS_BISHENG_ARCH STREQUAL "a5")
+    target_compile_definitions(catccos_torch PRIVATE CATCCOS_TORCH_A5)
+endif()
 
 target_include_directories(catccos_torch PRIVATE
     ${TORCH_BINDING_INCLUDES}

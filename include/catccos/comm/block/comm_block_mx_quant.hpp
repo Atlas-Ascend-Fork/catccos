@@ -311,7 +311,7 @@ public:
 
     // Quantize each original token once, then scatter the same packed MX row
     // to all of its routed destinations.  A packed row is laid out as
-    // [FP8 data (N bytes), E8M0 scales (AlignUp(CeilDiv(N, BLOCK_SIZE), 2) bytes)].
+    // [FP8 data, E8M0 scales, padding to a 32-byte row boundary].
     // This is the routing-side producer consumed directly by the packed
     // AllToAllV dispatch path; no expanded BF16 tensor is materialized.
     CATLASS_DEVICE
@@ -326,7 +326,8 @@ public:
         uint32_t quantBytes = N * Catlass::SizeOfBits<ElementD>::value / Catlass::SizeOfBits<uint8_t>::value;
         uint32_t scaleBytesRaw = (N + BLOCK_SIZE - 1) / BLOCK_SIZE;
         uint32_t scaleBytes = ((scaleBytesRaw + 1) / 2) * 2;
-        uint32_t packedRowBytes = quantBytes + scaleBytes;
+        uint32_t packedRowBytes =
+            ((quantBytes + scaleBytes + Catlass::BYTE_PER_BLK - 1) / Catlass::BYTE_PER_BLK) * Catlass::BYTE_PER_BLK;
 
         for (uint32_t localToken = 0; localToken < tokenCount; ++localToken) {
             uint32_t tokenIdx = tokenBegin + localToken;

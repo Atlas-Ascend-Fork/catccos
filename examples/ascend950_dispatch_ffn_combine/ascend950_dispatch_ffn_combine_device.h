@@ -13,6 +13,7 @@
 #define ASCEND950_DISPATCH_FFN_COMBINE_H
 
 #include "info.h"
+#include "catccos/detail/ascend950_moe_ready.hpp"
 
 // from catlass
 #include "catlass/arch/arch.hpp"
@@ -334,8 +335,8 @@ CATLASS_DEVICE void DispatchFFNCombineImpl(
     // GMM2 direct mode only uses the prefix of its output staging area for
     // destination offsets. Reuse the following cache-line-aligned bytes for the
     // per-expert Dispatch -> GMM1 readiness counters.
-    uint64_t dstExpertOffsetBytes = static_cast<uint64_t>(rankSize) * expertPerRank * sizeof(int32_t);
-    GM_ADDR dispatchReady = gmmAllToAllWorkspace + ((dstExpertOffsetBytes + 63) / 64) * 64;
+    GM_ADDR dispatchReady =
+        gmmAllToAllWorkspace + Catccos::Detail::Ascend950MoeReady::DispatchOffset(rankSize, expertPerRank);
     // The direct MX path no longer uses the BF16 SwiGLU staging area. Reuse its
     // aligned prefix for one cache line per expert readiness counter without
     // changing the public workspace size or ABI.
@@ -350,8 +351,8 @@ CATLASS_DEVICE void DispatchFFNCombineImpl(
     Catccos::DGemm::Kernel::Ascend950AicNotifyUbReady<typename Types::SwigluKernel> aicNotifyUbReady{aicUbSyncState};
     RunUpAllToAllVGmm<Types>(
         problemShape, gmA, gmB, gmBScale, tokenPerExpert, upWorkspace, quantAWorkspace, quantAScaleWorkspace,
-        dispatchReady, swigluReady, gmSymmetric, commBlockShape, commTileShape, expertPerRank, rankId, rankSize,
-        maxOutputSize, upKernel, aicWaitUbFree, aicNotifyUbReady, resource);
+        dispatchReady, swigluReady, gmA, commBlockShape, commTileShape, expertPerRank, rankId, rankSize, maxOutputSize,
+        upKernel, aicWaitUbFree, aicNotifyUbReady, resource);
 
     // ===================== Swiglu =====================
     RunSwigluStage<Types>(
@@ -472,6 +473,7 @@ struct WorkspaceInfo {
 
     // Symmetric GM workspace
     GM_ADDR symmetricA;
+    GM_ADDR symmetricPackedA;
     GM_ADDR perTokenScale;
     GM_ADDR tokensPerExpert;
 
@@ -521,7 +523,8 @@ struct WorkspaceInfo {
         int64_t swigluScaleNRaw = CeilDiv<int64_t>(swigluN, Catlass::MX_SCALE_GROUP_NUM);
         int64_t swigluScaleN = (swigluScaleNRaw + 1) / 2 * 2;
         swigluBf16Output = ptrLocalWorkspace + workspaceOffsetLocal;
-        workspaceOffsetLocal += AlignBytes(maxOutputSize * swigluN * sizeof(ElementC));
+        workspaceOffsetLocal += Catccos::Detail::Ascend950MoeReady::SwigluRegionBytes(
+            maxOutputSize * swigluN * sizeof(ElementC), expertPerRank);
         swigluOutput = ptrLocalWorkspace + workspaceOffsetLocal;
         workspaceOffsetLocal += AlignBytes(maxOutputSize * swigluN * sizeof(ElementQuant));
         swigluScaleOutput = ptrLocalWorkspace + workspaceOffsetLocal;
@@ -531,7 +534,8 @@ struct WorkspaceInfo {
         // temp output: [maxOutputSize, K]
         // cumsum/meta: [epSize, epSize, expertPerRank]
         gmmAllToAllWorkspace = ptrLocalWorkspace + workspaceOffsetLocal;
-        workspaceOffsetLocal += AlignBytes(maxOutputSize * cocTiling.k * sizeof(ElementC));
+        workspaceOffsetLocal += Catccos::Detail::Ascend950MoeReady::DispatchRegionBytes(
+            maxOutputSize * cocTiling.k * sizeof(ElementC), rankSize, expertPerRank);
         workspaceOffsetLocal += AlignBytes(static_cast<int64_t>(epSize) * epSize * expertPerRank * sizeof(int32_t));
 
         localWorkspaceBytes = workspaceOffsetLocal;
@@ -539,15 +543,16 @@ struct WorkspaceInfo {
         // ================= symmetric workspace =================
         int64_t workspaceOffsetSymm = 0;
 
-        // symmetricA:
-        // 1. routing output A: [M * topK, packed FP8 data + E8M0 scales]
-        // 2. GMM2 alltoallv routed-back output: [M * topK, K]
-        // Keep the BF16-sized allocation because the second lifetime is larger.
+        // GMM2 may return rows while slower peers still read packed inputs.
+        // These two distributed lifetimes must own separate symmetric regions.
         constexpr int64_t SymmetricElementBytes =
             sizeof(ElementDispatch) > sizeof(ElementC) ? sizeof(ElementDispatch) : sizeof(ElementC);
 
         symmetricA = ptrSymmWorkspace + workspaceOffsetSymm;
         workspaceOffsetSymm += AlignBytes(expandedM * cocTiling.k * SymmetricElementBytes);
+
+        symmetricPackedA = ptrSymmWorkspace + workspaceOffsetSymm;
+        workspaceOffsetSymm += AlignBytes(expandedM * RoundUp<int64_t>(cocTiling.k + scaleK, Catlass::BYTE_PER_BLK));
 
         tokensPerExpert = ptrSymmWorkspace + workspaceOffsetSymm;
         workspaceOffsetSymm += AlignBytes(static_cast<int64_t>(epSize) * epSize * expertPerRank * sizeof(int32_t));
@@ -559,6 +564,48 @@ struct WorkspaceInfo {
         symmetricWorkspaceBytes = workspaceOffsetSymm;
     }
 };
+
+CATLASS_DEVICE void ResetInt32Region(GM_ADDR ptr, uint32_t elementCount, AscendC::LocalTensor<int32_t> zeroUb)
+{
+    constexpr uint32_t elementsPerCacheLine = 64 / sizeof(int32_t);
+    uint32_t coreIdx = get_block_idx() + get_subblockid() * get_block_num();
+    uint32_t coreNum = get_block_num() * get_subblockdim();
+    coreNum = coreNum == 0 ? 1 : coreNum;
+
+    AscendC::GlobalTensor<int32_t> region;
+    region.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(ptr));
+    uint32_t cacheLineCount = (elementCount + elementsPerCacheLine - 1) / elementsPerCacheLine;
+    for (uint32_t line = coreIdx; line < cacheLineCount; line += coreNum) {
+        uint32_t offset = line * elementsPerCacheLine;
+        uint32_t remaining = elementCount - offset;
+        uint32_t count = remaining < elementsPerCacheLine ? remaining : elementsPerCacheLine;
+        AscendC::DataCopyExtParams copyParams{1, static_cast<uint32_t>(count * sizeof(int32_t)), 0, 0, 0};
+        AscendC::DataCopyPad(region[offset], zeroUb, copyParams);
+    }
+}
+
+template <class ArchTag>
+CATLASS_DEVICE void ResetPersistentState(
+    GM_ADDR tokensPerExpert, GM_ADDR dispatchReady, GM_ADDR swigluReady, uint32_t rankSize, uint32_t expertPerRank,
+    Catlass::Arch::Resource<ArchTag> resource)
+{
+    if constexpr (g_coreType == AscendC::AIV) {
+        constexpr uint32_t readyStride = Catccos::Detail::Ascend950MoeReady::kStride;
+        auto zeroUb = resource.ubBuf.template GetBufferByByte<int32_t>(0);
+        AscendC::Duplicate(zeroUb, static_cast<int32_t>(0), readyStride);
+        AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2);
+        AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2);
+
+        ResetInt32Region(tokensPerExpert, rankSize * rankSize * expertPerRank, zeroUb);
+        ResetInt32Region(dispatchReady, expertPerRank * readyStride, zeroUb);
+        ResetInt32Region(swigluReady, expertPerRank * readyStride, zeroUb);
+
+        AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID2);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID2);
+        AscendC::PipeBarrier<PIPE_ALL>();
+    }
+    AscendC::SyncAll<true>();
+}
 
 template <class ArchTag, class ElementInput, class ElementQuant>
 CATLASS_DEVICE void QuantScatterRoutingMxFp8(
@@ -652,17 +699,22 @@ CATLASS_GLOBAL void DispatchFFNCombine(
     auto localTokensPerExpert = workspaceInfo.tokensPerExpert + rankIdx * epSize * expertPerRank * sizeof(int32_t);
 
     Catlass::Arch::Resource<ArchTag> resource;
+    GM_ADDR dispatchReady = workspaceInfo.gmmAllToAllWorkspace +
+                            Catccos::Detail::Ascend950MoeReady::DispatchOffset(rankSize, expertPerRank);
+    ResetPersistentState<ArchTag>(
+        workspaceInfo.tokensPerExpert, dispatchReady, workspaceInfo.swigluBf16Output, rankSize, expertPerRank,
+        resource);
 
     // Keep the v2 sort/count/inverse-index contract, but replace its expanded
     // BF16 gather with one MXFP8 quantization per original token followed by a
     // top-k scatter into packed symmetric rows.
     moe_init_routing_v2<ElementA, true>(
-        gmA, gmExpertIdx, workspaceInfo.symmetricA, workspaceInfo.expandedRowIdx, localTokensPerExpert,
+        gmA, gmExpertIdx, workspaceInfo.symmetricPackedA, workspaceInfo.expandedRowIdx, localTokensPerExpert,
         nullptr /*expertTokensBeforeCapacity*/, workspaceInfo.moeInitRoutingWorkspace,
         &moeTiling.moeInitRoutingQuantV2TilingData, moeTiling.initRoutingQuantTilingKey);
 
     QuantScatterRoutingMxFp8<ArchTag, ElementA, ElementB>(
-        gmA, workspaceInfo.expandedRowIdx, workspaceInfo.symmetricA, m, k, topK, resource);
+        gmA, workspaceInfo.expandedRowIdx, workspaceInfo.symmetricPackedA, m, k, topK, resource);
 
     shmemx_barrier_all_vec();
     typename AllGather::Params allgatherParams{
@@ -675,18 +727,18 @@ CATLASS_GLOBAL void DispatchFFNCombine(
 
     if (m0 == 128) {
         DispatchFFNCombineImpl_M0_128<ArchTag, ElementA, LayoutA, ElementB, LayoutB, ElementC, LayoutC>(
-            problemShape, nullptr, gmB, gmBScale, gmB2, gmB2Scale, nullptr, workspaceInfo.tokensPerExpert,
-            workspaceInfo.allToAllVGmmWorkspace, workspaceInfo.quantAWorkspace, workspaceInfo.quantAScaleWorkspace,
-            workspaceInfo.swigluOutput, workspaceInfo.swigluBf16Output, workspaceInfo.swigluScaleOutput,
-            workspaceInfo.symmetricA, workspaceInfo.gmmAllToAllWorkspace, commCoreSplit, commBlockShape, commTileShape,
-            expertPerRank, topK, resource);
+            problemShape, workspaceInfo.symmetricPackedA, gmB, gmBScale, gmB2, gmB2Scale, nullptr,
+            workspaceInfo.tokensPerExpert, workspaceInfo.allToAllVGmmWorkspace, workspaceInfo.quantAWorkspace,
+            workspaceInfo.quantAScaleWorkspace, workspaceInfo.swigluOutput, workspaceInfo.swigluBf16Output,
+            workspaceInfo.swigluScaleOutput, workspaceInfo.symmetricA, workspaceInfo.gmmAllToAllWorkspace,
+            commCoreSplit, commBlockShape, commTileShape, expertPerRank, topK, resource);
     } else {
         DispatchFFNCombineImpl_M0_256<ArchTag, ElementA, LayoutA, ElementB, LayoutB, ElementC, LayoutC>(
-            problemShape, nullptr, gmB, gmBScale, gmB2, gmB2Scale, nullptr, workspaceInfo.tokensPerExpert,
-            workspaceInfo.allToAllVGmmWorkspace, workspaceInfo.quantAWorkspace, workspaceInfo.quantAScaleWorkspace,
-            workspaceInfo.swigluOutput, workspaceInfo.swigluBf16Output, workspaceInfo.swigluScaleOutput,
-            workspaceInfo.symmetricA, workspaceInfo.gmmAllToAllWorkspace, commCoreSplit, commBlockShape, commTileShape,
-            expertPerRank, topK, resource);
+            problemShape, workspaceInfo.symmetricPackedA, gmB, gmBScale, gmB2, gmB2Scale, nullptr,
+            workspaceInfo.tokensPerExpert, workspaceInfo.allToAllVGmmWorkspace, workspaceInfo.quantAWorkspace,
+            workspaceInfo.quantAScaleWorkspace, workspaceInfo.swigluOutput, workspaceInfo.swigluBf16Output,
+            workspaceInfo.swigluScaleOutput, workspaceInfo.symmetricA, workspaceInfo.gmmAllToAllWorkspace,
+            commCoreSplit, commBlockShape, commTileShape, expertPerRank, topK, resource);
     }
 
     shmemx_barrier_all_vec();
@@ -702,6 +754,8 @@ CATLASS_GLOBAL void DispatchFFNCombine(
             workspaceInfo.symmetricA, workspaceInfo.expandedRowIdx, gmProbs, gmD, &tilingData);
         kernelMoeTokenUnpermuteOp.Process();
     }
+    // Retire AIV unpermute reads on every rank before the next reusable launch.
+    shmemx_barrier_all_vec();
 }
 
 #endif

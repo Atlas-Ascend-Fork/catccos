@@ -14,3 +14,14 @@ catccos_example_add_executable(
     INCLUDES ${ASCEND_HOME_PATH}/opp/built-in/op_impl/ai_core/tbe/impl/ops_transformer/ascendc/moe_init_routing_v2
     COMPILE_DEFINITIONS CATLASS_ARCH=3510
 )
+
+if(CATCCOS_TORCH_EXTENSION AND CATLASS_BISHENG_ARCH STREQUAL "a5")
+    catccos_example_add_library(
+        ascend950_dispatch_ffn_combine
+        SOURCES ascend950_dispatch_ffn_combine_wrapper.cpp
+        INCLUDES ../aux_ops ../aux_ops/moe_init_routing_v2
+        INCLUDES ../aux_ops ../aux_ops/moe_token_unpermute
+        INCLUDES ${ASCEND_HOME_PATH}/opp/built-in/op_impl/ai_core/tbe/impl/ops_transformer/ascendc/moe_init_routing_v2
+        COMPILE_DEFINITIONS CATLASS_ARCH=3510
+    )
+endif()

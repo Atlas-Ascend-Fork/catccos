@@ -13,6 +13,7 @@
 #define CATCCOS_DGEMM_KERNEL_ASCEND950_ALLTOALL_GMM_HPP
 
 #include <type_traits>
+#include "catccos/detail/ascend950_moe_ready.hpp"
 
 #include "catlass/arch/cross_core_sync.hpp"
 #include "catlass/catlass.hpp"
@@ -79,8 +80,8 @@ public:
         ((UB_TILE_N + kElementPerBlock - 1) / kElementPerBlock) * kElementPerBlock;
     static constexpr uint32_t kUbTileElem = UB_TILE_M * kUbTileNAlign;
     static constexpr uint32_t kUbPlaneBytes = kUbTileElem * sizeof(ElementUb);
-    static constexpr uint32_t kDispatchReadyStride = 16;
-    static constexpr uint32_t kSwigluReadyStride = 16;
+    static constexpr uint32_t kDispatchReadyStride = Catccos::Detail::Ascend950MoeReady::kStride;
+    static constexpr uint32_t kSwigluReadyStride = Catccos::Detail::Ascend950MoeReady::kStride;
     static constexpr uint16_t kUbSyncMode = 0x4;
     static constexpr uint16_t kAivSyncAicFlag = 6;
     static constexpr uint16_t kDispatchUbFreeFlag = 2;
@@ -333,27 +334,6 @@ public:
         tokenPerExpert.SetGlobalBuffer(params.ptrTokenPerExpert);
         AscendC::GlobalTensor<int32_t> cumsumMM;
         cumsumMM.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(workspaceInfo.ptrcumsumMM));
-        AscendC::GlobalTensor<int32_t> dispatchReady;
-        dispatchReady.SetGlobalBuffer(params.ptrDispatchReady);
-        AscendC::GlobalTensor<int32_t> swigluReady;
-        swigluReady.SetGlobalBuffer(params.ptrSwigluReady);
-
-        if (metadataCoreIdx == metadataCoreNum - 1) {
-            uint32_t readyCount = params.expertPerRank * kDispatchReadyStride;
-            auto readyUb = resource.ubBuf.template GetBufferByByte<int32_t>(0);
-            AscendC::Duplicate(readyUb, static_cast<int32_t>(0), readyCount);
-            AscendC::SetFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2);
-            AscendC::WaitFlag<AscendC::HardEvent::V_MTE3>(EVENT_ID2);
-            AscendC::DataCopyExtParams copyParams{1, static_cast<uint32_t>(readyCount * sizeof(int32_t)), 0, 0, 0};
-            AscendC::DataCopyPad(dispatchReady, readyUb, copyParams);
-            // The unused BF16 staging lifetime owns a cache-line-separated
-            // counter for every local expert. Reset it before AIV0 can publish
-            // SwiGLU/MX tiles or AIC can enter GMM2.
-            AscendC::DataCopyPad(swigluReady, readyUb, copyParams);
-            AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID2);
-            AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(EVENT_ID2);
-        }
-
         BlockEpilogueScheduler blockEpilogueScheduler(
             params.rank, params.rankSize, params.expertPerRank, params.EP, params.problemShape, metadataCoreIdx,
             metadataCoreNum, tokenPerExpert, cumsumMM, resource);
@@ -379,7 +359,7 @@ public:
         uint32_t hiddenSize = params.problemShape.k();
         uint32_t quantBytes = hiddenSize * Catlass::SizeOfBits<ElementA>::value / Catlass::SizeOfBits<uint8_t>::value;
         uint32_t scaleK = RoundUp<2>(CeilDiv<Catlass::MX_SCALE_GROUP_NUM>(hiddenSize));
-        uint32_t packedRowBytes = quantBytes + scaleK;
+        uint32_t packedRowBytes = RoundUp<Catlass::BYTE_PER_BLK>(quantBytes + scaleK);
         constexpr uint32_t kDispatchRows = 2;
         uint32_t packedBufferBytes = RoundUp<64>(kDispatchRows * packedRowBytes);
         auto packedBuffer0 = resource.ubBuf.template GetBufferByByte<uint8_t>(0);
@@ -442,11 +422,13 @@ public:
                     AscendC::DataCopyPad(
                         gmQuantBytes[quantOffset], packedBuffer,
                         {static_cast<uint16_t>(currentRows), static_cast<uint16_t>(quantBytes),
-                         static_cast<uint16_t>(scaleK / Catlass::BYTE_PER_BLK), 0, 0});
+                         static_cast<uint16_t>((packedRowBytes - quantBytes) / Catlass::BYTE_PER_BLK), 0, 0});
                     AscendC::DataCopyPad(
                         gmScaleBytes[scaleOffset], packedBuffer[quantBytes],
                         {static_cast<uint16_t>(currentRows), static_cast<uint16_t>(scaleK),
-                         static_cast<uint16_t>(quantBytes / Catlass::BYTE_PER_BLK), 0, 0});
+                         static_cast<uint16_t>(
+                             (packedRowBytes - RoundUp<Catlass::BYTE_PER_BLK>(scaleK)) / Catlass::BYTE_PER_BLK),
+                         0, 0});
                     AscendC::SetFlag<AscendC::HardEvent::MTE3_MTE2>(eventId);
                     copiedRows += currentRows;
                 }

@@ -13,6 +13,7 @@
 #define CATCCOS_DGEMM_KERNEL_ASCEND950_GMM_ALLTOALL_HPP
 
 #include <type_traits>
+#include "catccos/detail/ascend950_moe_ready.hpp"
 
 #include "catlass/arch/arch.hpp"
 #include "catlass/arch/cross_core_sync.hpp"
@@ -130,7 +131,7 @@ public:
     static constexpr uint32_t kUbCapacityBytes = UbCapacityBytes_;
     static constexpr uint32_t kReadinessTileM = ReadinessTileM_;
     static constexpr uint32_t kReadinessTileN = ReadinessTileN_;
-    static constexpr uint32_t kReadinessStride = 16;
+    static constexpr uint32_t kReadinessStride = Catccos::Detail::Ascend950MoeReady::kStride;
     static constexpr bool kWorldBarrierAtEnd = WorldBarrierAtEnd_;
 
     static constexpr uint16_t kUbSyncMode = 0x4;

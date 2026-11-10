@@ -7,7 +7,7 @@
 ```text
 BF16 tokens
   -> moe_init_routing_v2
-  -> BF16 dispatch + dynamic MXFP8 quant
+  -> per-token MXFP8 quant + packed dispatch
   -> MXFP8 GMM1
   -> SwiGLU + dynamic MXFP8 quant
   -> MXFP8 GMM2
@@ -120,3 +120,33 @@ M,K,N
 - `verify_<rank>.log`：逐 rank 精度校验日志。
 
 任一 rank 执行失败、输出文件不完整或精度校验未出现 `PASS` 时，`run.sh` 会返回非零状态。
+
+## PyTorch eager 接入
+
+在已安装 CANN 和 torch_npu 的环境下，从仓库根目录构建 A5 binding。
+
+```bash
+source examples/utils/setup.sh -soc_type Ascend950
+cmake -S . -B build-torch -DCATLASS_BISHENG_ARCH=a5 -DCATCCOS_TORCH_EXTENSION=ON   -DCATCCOS_BUILD_TESTS=OFF -DCMAKE_PREFIX_PATH="$(python3 -c 'import torch; print(torch.utils.cmake_prefix_path)')"
+cmake --build build-torch --target catccos_torch -j8
+export LD_LIBRARY_PATH="$PWD/build-torch/lib:$LD_LIBRARY_PATH"
+```
+
+每个 rank 使用一个进程，先选择 NPU，再按相同顺序调用 init、forward 和 finalize。
+
+```python
+import torch
+import torch_npu
+
+torch.npu.set_device(device_id)
+torch.ops.load_library("build-torch/lib/libcatccos_torch.so")
+torch.ops.catccos.init(rank, world_size, 2 * 1024**3, "tcp://host:port")
+y = torch.ops.catccos.ascend950_dispatch_ffn_combine(x, expert_idx, gate_weight, w1, w1_scale, w2, w2_scale)
+torch.ops.catccos.finalize()
+```
+
+所有张量须位于 init 选定的 NPU，具有连续 stride 和 `ACL_FORMAT_ND` 存储。
+`x` 和 `y` 是 BF16 `[M,K]`，全局专家 ID（int32，每行互异）和 gate（float32）为 `[M,TopK]`。
+`w1`、`w2` 是 E4M3 `[localExperts,N,K]`、`[localExperts,K,N/2]`，
+对应 E8M0 scale 为 `[localExperts,N,K/32]`、`[localExperts,K,N/64]`。
+M>0，K 是 256 的倍数，N 是 512 的倍数。同一进程顺序调用，各 rank 协调 finalize。
