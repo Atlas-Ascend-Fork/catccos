@@ -8,6 +8,8 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
+#include <algorithm>
+
 #include "cost_model.h"
 #include "op.h"
 
@@ -257,12 +259,6 @@ int main(int argc, char** argv)
 
         op->AllocateDeviceSpace(kernelParams, cocTiling, rankId, dataFile);
 
-        size_t workSpaceSize = op->GetWorkspaceSize(cocTiling);
-        uint8_t* workspaceDevice{nullptr};
-        if (workSpaceSize > 0) {
-            ACL_CHECK(aclrtMalloc((void**)(&workspaceDevice), workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST));
-        }
-
         void* symmPtr = aclshmem_calloc(1, SHMEM_BUFF_BYTES);
         uint8_t* gmSymmetric = (uint8_t*)symmPtr;
 
@@ -309,6 +305,15 @@ int main(int argc, char** argv)
                 }
                 cocTilings.push_back(cocTiling);
             }
+        }
+
+        size_t workSpaceSize = 0;
+        for (const auto& tiling : cocTilings) {
+            workSpaceSize = std::max(workSpaceSize, op->GetWorkspaceSize(tiling));
+        }
+        uint8_t* workspaceDevice{nullptr};
+        if (workSpaceSize > 0) {
+            ACL_CHECK(aclrtMalloc((void**)(&workspaceDevice), workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST));
         }
 
         ACL_CHECK(aclrtSynchronizeStream(stream));
