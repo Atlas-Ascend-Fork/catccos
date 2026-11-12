@@ -42,8 +42,7 @@ public:
         uint32_t windowRows;
         uint32_t localK;
         uint32_t rankIdx;
-        uint32_t rankSize;  // runtime number of source K segments
-        uint32_t groupSize; // participating ranks per node
+        uint32_t rankSize; // runtime number of source K segments
         GM_ADDR ptrSourceA;
         GM_ADDR ptrSourceScaleA;
         GM_ADDR ptrRecvA;
@@ -60,7 +59,6 @@ public:
         uint32_t localK;
         uint32_t rankIdx;
         uint32_t rankSize;
-        uint32_t groupSize;
         __gm__ Element* ptrSourceA;
         __gm__ Element* ptrSourceScaleA;
         __gm__ Element* ptrRecvA;
@@ -77,7 +75,6 @@ public:
               localK(args.localK),
               rankIdx(args.rankIdx),
               rankSize(args.rankSize),
-              groupSize(args.groupSize),
               ptrSourceA(reinterpret_cast<__gm__ Element*>(args.ptrSourceA)),
               ptrSourceScaleA(reinterpret_cast<__gm__ Element*>(args.ptrSourceScaleA)),
               ptrRecvA(reinterpret_cast<__gm__ Element*>(args.ptrRecvA)),
@@ -112,7 +109,7 @@ public:
         // Use qp0 per peer; two QPs showed no bandwidth gain in the 32-rank tests.
         if (params.rankSize == 0 || params.rankSize > MxFp8AllToAllMatmul::MAX_RANKS ||
             params.rankIdx >= params.rankSize || params.recvSlotRows < params.chunkM || params.windowRows == 0 ||
-            params.groupSize == 0 || params.groupSize > params.rankSize || params.ptrReady == nullptr) {
+            params.rankSize % BlockCommScheduler::GROUP_SIZE != 0 || params.ptrReady == nullptr) {
             return;
         }
         const uint32_t coordinator = params.rankSize;
@@ -161,8 +158,7 @@ public:
         constexpr uint32_t readyStride = MxFp8AllToAllMatmul::CONTROL_STRIDE / sizeof(int32_t);
         const uint32_t readyIndex = params.rankIdx * readyStride;
 
-        BlockCommScheduler commScheduler(
-            {params.chunkM, aElements, params.rankSize}, params.rankIdx, peer, params.windowRows, params.groupSize);
+        BlockCommScheduler commScheduler({params.chunkM, aElements, params.rankSize}, params.rankIdx, peer);
         if (!commScheduler.IsActiveCore()) {
             return;
         }
@@ -198,49 +194,36 @@ public:
             const Catlass::layout::RowMajor srcALayout{rows, aElements, aElements};
             const Catlass::layout::RowMajor recvALayout{rows, aElements, aElements};
 
+            const Catlass::MatrixCoord scaleShape{rows, scaleElements};
+            const Catlass::layout::RowMajor scaleLayout{rows, scaleElements, scaleElements};
+            commBlock(
+                sourceA[srcRow * aElements], srcALayout, recvA[dstRow * aElements], recvALayout, aShape, peer,
+                transport);
+            commBlock(
+                sourceScaleA[srcRow * scaleElements], scaleLayout, recvScaleA[dstRow * scaleElements], scaleLayout,
+                scaleShape, peer, transport);
+            // The block completes MTE stores and RDMA writes before returning. UDMA is NBI:
+            // drain both payloads before sending ready, independently of WQE execution order.
+            if (transport == detail::CopyTransport::Udma) {
+                aclshmemx_udma_qp_quiet(static_cast<int>(peer), 0);
+            }
             if (transport == detail::CopyTransport::Mte) {
-                commBlock(
-                    sourceA[srcRow * aElements], srcALayout, recvA[dstRow * aElements], recvALayout, aShape, peer,
-                    transport);
-                const Catlass::MatrixCoord scaleShape{rows, scaleElements};
-                const Catlass::layout::RowMajor scaleLayout{rows, scaleElements, scaleElements};
-                commBlock(
-                    sourceScaleA[srcRow * scaleElements], scaleLayout, recvScaleA[dstRow * scaleElements], scaleLayout,
-                    scaleShape, peer, transport);
-                // Wait only for this sender's local stores before publishing ready.
                 AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(0);
                 AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(0);
                 aclshmemx_signal_op(
                     params.ptrReady + readyIndex, static_cast<int32_t>(window + 1), ACLSHMEM_SIGNAL_SET,
                     static_cast<int>(peer));
-            } else if (transport == detail::CopyTransport::Udma) {
-                // UDMA WQEs are unordered: complete AScale before submitting A with ready.
-                const Catlass::MatrixCoord scaleShape{rows, scaleElements};
-                const Catlass::layout::RowMajor scaleLayout{rows, scaleElements, scaleElements};
-                commBlock(
-                    sourceScaleA[srcRow * scaleElements], scaleLayout, recvScaleA[dstRow * scaleElements], scaleLayout,
-                    scaleShape, peer, transport);
-                aclshmemx_udma_qp_quiet(static_cast<int>(peer), 0);
-                commBlock.PutWithSignal(
-                    sourceA[srcRow * aElements], recvA[dstRow * aElements], rows * aElements,
-                    reinterpret_cast<__gm__ uint64_t*>(params.ptrReady + readyIndex), static_cast<uint64_t>(window + 1),
-                    peer);
-            } else if (transport == detail::CopyTransport::Rdma) {
-                // Requires ordered A -> AScale -> ready writes on one QP (verified on HNS_1825).
-                // Keep readyValues unchanged until the final quiet completes.
-                commBlock.CopyRdmaNbi(
-                    sourceA[srcRow * aElements], srcALayout, recvA[dstRow * aElements], recvALayout, aShape, peer);
-                const Catlass::MatrixCoord scaleShape{rows, scaleElements};
-                const Catlass::layout::RowMajor scaleLayout{rows, scaleElements, scaleElements};
-                commBlock.CopyRdmaNbi(
-                    sourceScaleA[srcRow * scaleElements], scaleLayout, recvScaleA[dstRow * scaleElements], scaleLayout,
-                    scaleShape, peer);
+            } else {
                 constexpr uint32_t signalElements = sizeof(uint64_t) / sizeof(Element);
                 const Catlass::MatrixCoord signalShape{1U, signalElements};
                 const Catlass::layout::RowMajor signalLayout{1U, signalElements};
-                commBlock.CopyRdmaNbi(
+                commBlock(
                     readyValues[window * signalElements], signalLayout, ready[readyIndex * sizeof(int32_t)],
-                    signalLayout, signalShape, peer);
+                    signalLayout, signalShape, peer, transport);
+                if (transport == detail::CopyTransport::Udma) {
+                    // Finish this ready write before a later window can publish a larger value.
+                    aclshmemx_udma_qp_quiet(static_cast<int>(peer), 0);
+                }
             }
 #ifdef ENABLE_TIMER
             if (trace) {
@@ -248,25 +231,7 @@ public:
             }
 #endif
         }
-        if (transport == detail::CopyTransport::Udma || transport == detail::CopyTransport::Rdma) {
-#ifdef ENABLE_TIMER
-            if (trace) {
-                timer.Tik(AscendTimer::AIV_WAIT);
-            }
-#endif
-            if (transport == detail::CopyTransport::Udma) {
-                // Earlier windows are drained by the next scale quiet; finish the last A+ready Put.
-                aclshmemx_udma_qp_quiet(static_cast<int>(peer), 0);
-            } else {
-                // Drain all remaining RDMA payload/ready writes before the source can be reused.
-                commBlock.QuietRdma(peer);
-            }
-#ifdef ENABLE_TIMER
-            if (trace) {
-                timer.Tok<Overwrite>(AscendTimer::AIV_WAIT);
-            }
-#endif
-        }
+
 #ifdef ENABLE_TIMER
         if (trace) {
             timer.Tok();

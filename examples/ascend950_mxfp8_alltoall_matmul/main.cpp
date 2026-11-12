@@ -159,12 +159,17 @@ void RunKernel(
     aclrtStream stream = resources.stream;
     const auto layout = GetLayout(cocTiling);
     Catlass::GemmCoord problemShape{cocTiling.m, cocTiling.n, cocTiling.k};
-    typename DeviceOp::Arguments args{problemShape,         rankId,
-                                      cocTiling.rankSize,   groupSize,
-                                      cocTiling.commTileM,  gmSymmetric + layout.sourceA,
-                                      params.ptrB,          gmSymmetric + layout.sourceScaleA,
-                                      params.customPtrs[1], params.ptrC,
-                                      gmSymmetric};
+    typename DeviceOp::Arguments args{
+        problemShape,
+        rankId,
+        cocTiling.rankSize,
+        cocTiling.commTileM,
+        gmSymmetric + layout.sourceA,
+        params.ptrB,
+        gmSymmetric + layout.sourceScaleA,
+        params.customPtrs[1],
+        params.ptrC,
+        gmSymmetric};
     DeviceOp deviceOp;
     deviceOp.Initialize(args);
     const auto fftsAddr = shmemx_get_ffts_config();
@@ -353,6 +358,12 @@ struct Options {
                 (rankSize != groupSize && rankSize != 2 * groupSize)) {
                 throw std::invalid_argument("use one or two nodes with equal local device counts");
             }
+            if (groupSize != CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE) {
+                throw std::invalid_argument(
+                    "local device count must match compiled GROUP_SIZE=" +
+                    std::to_string(CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE) +
+                    "; rebuild with GROUP_SIZE=" + std::to_string(groupSize));
+            }
             if (rankSize > groupSize &&
                 (ipPort.compare(0, 10, "tcp://127.") == 0 || ipPort.compare(0, 16, "tcp://localhost:") == 0)) {
                 throw std::invalid_argument("two nodes require the rank-0 server's non-loopback TCP endpoint");
@@ -416,7 +427,6 @@ int main(int argc, char** argv)
         }
         Check(aclrtCreateStream(&resources.stream), "aclrtCreateStream");
         const bool crossNode = options.rankSize > options.groupSize;
-        ConfigureUdmaDomain(options.rankId, options.groupSize);
         Check(aclshmemx_set_qp_num(ACLSHMEM_DATA_OP_UDMA, 1), "set UDMA qp0");
         if (crossNode) {
             Check(aclshmemx_set_qp_num(ACLSHMEM_DATA_OP_ROCE, 1), "set RDMA qp0");

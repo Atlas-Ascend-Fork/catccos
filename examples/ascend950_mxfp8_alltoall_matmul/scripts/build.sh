@@ -11,6 +11,11 @@ set -eo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
 cd "$PROJECT_ROOT"
+GROUP_SIZE=${GROUP_SIZE:-16}
+case "$GROUP_SIZE" in
+    1|2|4|8|16) ;;
+    *) echo "[ERROR] GROUP_SIZE must be 1, 2, 4, 8, or 16" >&2; exit 1 ;;
+esac
 RDMA_BACKEND=${SHMEM_RDMA_BACKEND:-HNS_1825}
 HNS_PI_ON_CHIP=${SHMEM_HNS_1825_PI_ON_CHIP:-}
 case "$RDMA_BACKEND" in
@@ -36,6 +41,7 @@ source "${PROJECT_ROOT}/examples/utils/setup.sh" -soc_type Ascend950 "${shmem_ar
 set -u
 cmake -B "${PROJECT_ROOT}/build" -S "${PROJECT_ROOT}" -DCATCCOS_BUILD_TESTS=OFF -DCATLASS_BISHENG_ARCH=a5 \
     -DSHMEM_HOME_PATH="${SHMEM_HOME_PATH}" \
+    -DCATCCOS_MXFP8_ALLTOALL_GROUP_SIZE="${GROUP_SIZE}" \
     -DCATCCOS_RDMA_BACKEND="${RDMA_BACKEND}" \
     -DCATCCOS_HNS_1825_PI_ON_CHIP="${HNS_PI_ON_CHIP}" \
     -DENABLE_TIMER=OFF "$@"

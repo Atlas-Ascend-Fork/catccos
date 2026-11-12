@@ -17,18 +17,20 @@
 
 namespace Catccos::Comm::Block {
 
-// Consecutive ranks form a UDMA domain; the launcher may override GROUP_SIZE.
-// One AIV owns one peer; the tile partitions
+// Consecutive ranks form a group (one server/UB domain); GROUP_SIZE is fixed at compile time.
+// One AIV owns one peer; the communication block partitions
 // the current peer tensor across that peer's QPs. The self peer is copied in blocks with MTE;
 // every other same-group peer uses UDMA and every peer in another group uses RDMA.
 // There is no automatic fallback: the host verifies the transport routes
 // before launching the kernel.
-template <uint32_t CoreCount_ = 32, uint32_t GroupSize_ = 16>
+template <uint32_t CoreCount_ = 32, uint32_t GroupSize_ = 16, uint32_t CommBlockM_ = 64>
 class HierarchicalCommSwizzle {
 public:
     static_assert(CoreCount_ > 0, "Core count must be positive");
     static constexpr uint32_t CORE_COUNT = CoreCount_;
     static constexpr uint32_t GROUP_SIZE = GroupSize_;
+    static constexpr uint32_t COMM_BLOCK_M = CommBlockM_;
+    static_assert(COMM_BLOCK_M > 0, "Communication block rows must be positive");
     static_assert(GROUP_SIZE > 0 && GROUP_SIZE <= CORE_COUNT, "Group size must be in [1, CORE_COUNT]");
     using CopyTransport = detail::CopyTransport;
     using MatrixCoord = Catlass::MatrixCoord;
@@ -37,36 +39,25 @@ public:
     // Rows and columns describe the current communication range: a complete peer tensor or
     // a caller-selected fusion window. The caller owns the outer window loop and its base addresses.
     // aicoreIdx is the physical AIV index; with one AIV per peer it equals the peer rank.
-    // commBlockM is the number of rows moved by one MTE round (commIdx).
-    // UDMA/RDMA schedule the entire current range in one round, regardless of commBlockM.
-    // groupSize is the number of participating ranks per UDMA domain.
+    // COMM_BLOCK_M is the compile-time number of rows moved by one MTE round (commIdx).
+    // UDMA/RDMA schedule the entire current range in one round, regardless of COMM_BLOCK_M.
+    // GROUP_SIZE is the number of consecutive ranks in one UDMA domain.
     CATLASS_HOST_DEVICE
-    HierarchicalCommSwizzle(
-        DistMatrixCoord problemShape, uint32_t rank, uint32_t aicoreIdx, uint32_t commBlockM,
-        uint32_t groupSize = GROUP_SIZE)
-        : problemShape(problemShape),
-          rank(rank),
-          aicoreIdx(aicoreIdx),
-          commBlockM(commBlockM),
-          peer(aicoreIdx),
-          groupSize(groupSize)
+    HierarchicalCommSwizzle(DistMatrixCoord problemShape, uint32_t rank, uint32_t aicoreIdx)
+        : problemShape(problemShape), rank(rank), aicoreIdx(aicoreIdx), peer(aicoreIdx)
     {
-        const bool ownsPeer = IsValidProblem() && peer < problemShape.rank() && peer < CORE_COUNT;
-        if (!ownsPeer) {
-            transport = CopyTransport::None;
-        } else if (peer == rank) {
+        if (peer == rank) {
             transport = CopyTransport::Mte;
-        } else if (peer / groupSize == rank / groupSize) {
+        } else if (peer / GROUP_SIZE == rank / GROUP_SIZE) {
             transport = CopyTransport::Udma;
         } else {
             transport = CopyTransport::Rdma;
         }
-        const bool hasWork = transport != CopyTransport::None && problemShape.column() != 0 &&
-                             problemShape.row() != 0 && commBlockM != 0;
+        const bool hasWork = IsActiveCore() && problemShape.column() != 0 && problemShape.row() != 0;
         if (!hasWork) {
             coreLoops = 0;
         } else if (transport == CopyTransport::Mte) {
-            coreLoops = problemShape.row() / commBlockM + (problemShape.row() % commBlockM != 0);
+            coreLoops = problemShape.row() / COMM_BLOCK_M + (problemShape.row() % COMM_BLOCK_M != 0);
         } else {
             coreLoops = 1;
         }
@@ -75,33 +66,28 @@ public:
     CATLASS_HOST_DEVICE
     bool IsValidProblem() const
     {
-        return problemShape.rank() > 0 && problemShape.rank() <= CORE_COUNT && rank < problemShape.rank() &&
-               commBlockM > 0 && groupSize > 0 && groupSize <= problemShape.rank() &&
-               problemShape.rank() % groupSize == 0;
+        return problemShape.rank() > 0 && problemShape.rank() <= CORE_COUNT && rank < problemShape.rank();
     }
 
     CATLASS_HOST_DEVICE
-    bool IsActiveCore() const
-    {
-        return IsValidProblem() && aicoreIdx < problemShape.rank() && peer < problemShape.rank() && peer < CORE_COUNT &&
-               transport != CopyTransport::None;
-    }
+    bool IsActiveCore() const { return IsValidProblem() && peer < problemShape.rank(); }
 
+    // Query transport only for an active core; inactive cores schedule no blocks.
     CATLASS_HOST_DEVICE
     CopyTransport GetTransport() const { return transport; }
 
     CATLASS_HOST_DEVICE
     uint32_t GetPeer() const { return peer; }
 
-    // First QP of this peer context; additional QPs are managed by the tile.
+    // First QP of this peer context; additional QPs are managed by the communication block.
     CATLASS_HOST_DEVICE
     uint32_t GetQpIndex() const { return 0; }
 
     CATLASS_HOST_DEVICE
-    uint32_t GetCommBlockM() const { return commBlockM; }
+    uint32_t GetCommBlockM() const { return COMM_BLOCK_M; }
 
     CATLASS_HOST_DEVICE
-    uint32_t GetGroupSize() const { return groupSize; }
+    uint32_t GetGroupSize() const { return GROUP_SIZE; }
 
     CATLASS_HOST_DEVICE
     uint32_t GetAicoreIdx() const { return aicoreIdx; }
@@ -110,7 +96,7 @@ public:
     uint32_t GetRealCore() const { return CORE_COUNT; }
 
     // Number of communication rounds (commIdx) for this AIV's current problemShape, not fusion windows.
-    // For valid nonempty work: ceil(rows / commBlockM) for MTE, one for UDMA/RDMA; otherwise zero.
+    // For valid nonempty work: ceil(rows / COMM_BLOCK_M) for MTE, one for UDMA/RDMA; otherwise zero.
     CATLASS_HOST_DEVICE
     uint32_t GetCoreLoop() const { return coreLoops; }
 
@@ -130,7 +116,7 @@ public:
         if (block.column() != 0 || block.row() >= GetCoreLoop()) {
             return {UINT32_MAX, UINT32_MAX};
         }
-        return {transport == CopyTransport::Mte ? block.row() * commBlockM : 0U, 0};
+        return {transport == CopyTransport::Mte ? block.row() * COMM_BLOCK_M : 0U, 0};
     }
 
     CATLASS_HOST_DEVICE
@@ -142,18 +128,16 @@ public:
         if (transport != CopyTransport::Mte) {
             return {problemShape.row(), problemShape.column()};
         }
-        const uint32_t remaining = problemShape.row() - block.row() * commBlockM;
-        return {remaining < commBlockM ? remaining : commBlockM, problemShape.column()};
+        const uint32_t remaining = problemShape.row() - block.row() * COMM_BLOCK_M;
+        return {remaining < COMM_BLOCK_M ? remaining : COMM_BLOCK_M, problemShape.column()};
     }
 
 private:
     DistMatrixCoord problemShape;
     uint32_t rank;
     uint32_t aicoreIdx;
-    uint32_t commBlockM = 1;
     uint32_t peer = 0;
-    uint32_t groupSize = GROUP_SIZE;
-    CopyTransport transport = CopyTransport::None;
+    CopyTransport transport;
     uint32_t coreLoops = 0;
 };
 

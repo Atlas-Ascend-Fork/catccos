@@ -15,7 +15,7 @@
 #include "catccos/comm/block/comm_block_hierarchical_swizzle.hpp"
 #include "catccos/comm/comm_dispatch_policy.hpp"
 #include "catccos/comm/kernel/ascend950_hierarchical_barrier.hpp"
-#include "catccos/comm/tile/tile_remote_copy_hierarchical.hpp"
+#include "catccos/comm/tile/tile_remote_copy.hpp"
 #include "catccos/detail/remote_copy_type.hpp"
 #include "catccos/dgemm/device/device_dgemm.hpp"
 #include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul_compute.h"
@@ -23,6 +23,7 @@
 #include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul_transport.h"
 #include "catlass/arch/arch.hpp"
 #include "catlass/epilogue/tile/tile_copy.hpp"
+#include "catlass/epilogue/tile/tile_swizzle.hpp"
 #include "catlass/gemm/dispatch_policy.hpp"
 #include "catlass/gemm/gemm_type.hpp"
 #include "catlass/layout/layout.hpp"
@@ -32,6 +33,9 @@ template <
     class ElementMxScaleB, class LayoutMxScaleB, class ElementC, class LayoutC, uint32_t TileK = 256>
 struct Ascend950MxFp8AllToAllMatmulConfig {
     using ArchTag = Catlass::Arch::Ascend950;
+    static constexpr uint32_t CORE_COUNT = 32;
+    static constexpr uint32_t COMM_BLOCK_M = 64;
+    static constexpr uint32_t GROUP_SIZE = CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE;
     using MmadDispatchPolicy = Catlass::Gemm::MmadMx<ArchTag, true, 1>;
     using L1TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<TileK>>;
     using L0TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<(TileK < 128 ? TileK : 128)>>;
@@ -44,11 +48,12 @@ struct Ascend950MxFp8AllToAllMatmulConfig {
     // Byte transfers also support localK=64/192: scales occupy 2/6 bytes per row.
     using Word = uint8_t;
     using WordType = Catlass::Gemm::GemmType<Word, Catlass::layout::RowMajor>;
-    using Tile = Catccos::Comm::Tile::TileHierarchicalRemoteCopy<
-        ArchTag, true, WordType, WordType, void, Catccos::detail::CopyDirect::Put>;
+    using Tile = Catccos::Comm::Tile::TileRemoteCopy<
+        ArchTag, true, WordType, WordType, void, Catccos::detail::CopyDirect::Put, Catccos::detail::CopyTransport::Mte>;
+    using TileSwizzle = Catlass::Epilogue::Tile::EpilogueIdentityTileSwizzle;
     using Dispatch = Catccos::Comm::AtlasCommHierarchicalCopy<ArchTag, 2, true>;
-    using BlockComm = Catccos::Comm::Block::CommBlock<Dispatch, WordType, WordType, void, Tile>;
-    using CommScheduler = Catccos::Comm::Block::HierarchicalCommSwizzle<>;
+    using BlockComm = Catccos::Comm::Block::CommBlock<Dispatch, WordType, WordType, void, Tile, TileSwizzle>;
+    using CommScheduler = Catccos::Comm::Block::HierarchicalCommSwizzle<CORE_COUNT, GROUP_SIZE, COMM_BLOCK_M>;
     using Kernel = Catccos::DGemm::Kernel::Ascend950MxFp8AllToAllMatmul<BlockMmad, BlockComm, CommScheduler>;
     using Device = Catccos::DGemm::Device::DeviceDGemm<Kernel>;
     using BarrierDevice = Catccos::DGemm::Device::DeviceDGemm<Catccos::Comm::Kernel::HierarchicalBarrier>;

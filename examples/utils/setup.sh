@@ -86,14 +86,22 @@ if [ $? -ne 0 ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-if echo "$submodule_status" | grep -q '^[-+]'; then
+if echo "$submodule_status" | grep -q '^-'; then
     echo "Initializing and updating submodules..."
-    git submodule update --init || {
-        echo "[ERROR] Running git submodule update --init failed."
-        exit 1
-    }
+    # Initialize only missing submodules; do not reset an intentional checked-out
+    # SHMEM fix while building or running an example.
+    while IFS= read -r missing_submodule; do
+        git submodule update --init -- "$missing_submodule" || {
+            echo "[ERROR] Running git submodule update --init failed."
+            cd "$ORIGINAL_DIR"
+            return 1 2>/dev/null || exit 1
+        }
+    done < <(echo "$submodule_status" | awk '/^-/{print $2}')
 else
-    echo "Submodules already initialized and up to date. Skipping."
+    echo "Submodules already initialized. Keeping their current checkouts."
+fi
+if echo "$submodule_status" | grep -q '^+'; then
+    echo "[WARN] Keeping submodule checkout changes; no reset to the parent gitlink."
 fi
 
 SHMEM_PATH="${PROJECT_ROOT}/3rdparty/shmem"

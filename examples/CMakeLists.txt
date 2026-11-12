@@ -316,6 +316,7 @@ foreach(EXAMPLE
     ascend950_alltoallv_grouped_matmul
     ascend950_fp4_mx_matmul_reduce_scatter
     ascend950_allgather_matmul_udma
+    ascend950_hierarchical_alltoall
 )
     add_subdirectory(${EXAMPLE})
 endforeach()

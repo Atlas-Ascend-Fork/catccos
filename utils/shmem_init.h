@@ -12,6 +12,7 @@
 #define SHMEM_INIT_H
 
 #include <algorithm>
+#include <cstring>
 #include "shmem.h"
 
 inline int32_t set_attr(
@@ -27,12 +28,16 @@ inline int32_t set_attr(
         }
     }
 
-    int attr_version = (1 << 16) + sizeof(aclshmemx_init_attr_t);
     attributes->my_pe = my_pe;
     attributes->n_pes = n_pes;
     attributes->ip_port[ip_len] = '\0';
     attributes->local_mem_size = local_mem_size;
-    attributes->option_attr = {attr_version, ACLSHMEM_DATA_OP_MTE, DEFAULT_TIMEOUT, DEFAULT_TIMEOUT, DEFAULT_TIMEOUT};
+    // The SDK owns the attribute ABI version. Replacing option_attr with a
+    // format-1 aggregate makes format-2 SDKs ignore runtime_config.
+    attributes->option_attr.data_op_engine_type = ACLSHMEM_DATA_OP_MTE;
+    attributes->option_attr.shm_init_timeout = DEFAULT_TIMEOUT;
+    attributes->option_attr.shm_create_timeout = DEFAULT_TIMEOUT;
+    attributes->option_attr.control_operation_timeout = DEFAULT_TIMEOUT;
     flag_uid->my_pe = my_pe;
     flag_uid->n_pes = n_pes;
     attributes->comm_args = reinterpret_cast<void*>(flag_uid);

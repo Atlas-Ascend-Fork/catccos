@@ -16,6 +16,7 @@ usage() {
 Usage: bash scripts/run.sh [device_id_list]
   Default topology: two nodes, 16 devices per node, physical devices 0..15.
   LOCAL_RANKS=16      Devices per node: 1, 2, 4, 8, or 16; equal on both nodes.
+                     Must match GROUP_SIZE selected when building.
   START_DEVICE=0      First physical device; select LOCAL_RANKS consecutive devices.
   device_id_list     Optional explicit list; cannot be combined with START_DEVICE.
   NODE_COUNT=2       Number of nodes: 1 or 2.

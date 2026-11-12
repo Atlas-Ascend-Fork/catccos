@@ -30,7 +30,6 @@ public:
         Catlass::GemmCoord problemShape; // M, N, localK; M = rankSize * chunkM
         uint32_t rankIdx;
         uint32_t rankSize;
-        uint32_t groupSize;
         uint32_t windowRows;
         GM_ADDR ptrA; // read-only SHMEM source
         GM_ADDR ptrB;
@@ -52,9 +51,9 @@ public:
                   args.ptrC, args.ptrSymmetric + layout.readyFrontier, layout.windowRows}),
               transport(typename Transport::Arguments{
                   layout.chunkM, layout.recvSlotRows, layout.windowRows, layout.localK, args.rankIdx, args.rankSize,
-                  args.groupSize, args.ptrA, args.ptrScaleA, args.ptrSymmetric + layout.recvA,
-                  args.ptrSymmetric + layout.recvScaleA, args.ptrSymmetric + layout.ready,
-                  args.ptrSymmetric + layout.readyFrontier, args.ptrSymmetric + layout.readyValues})
+                  args.ptrA, args.ptrScaleA, args.ptrSymmetric + layout.recvA, args.ptrSymmetric + layout.recvScaleA,
+                  args.ptrSymmetric + layout.ready, args.ptrSymmetric + layout.readyFrontier,
+                  args.ptrSymmetric + layout.readyValues})
         {}
     };
 

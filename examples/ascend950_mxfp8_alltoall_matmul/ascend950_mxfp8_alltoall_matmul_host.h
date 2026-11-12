@@ -24,28 +24,6 @@
 #include "shmem.h"
 #include "host/utils/shmem_log.h"
 
-#if defined(ACLSHMEMI_RDMA_K_BACKEND_HNS_1825)
-#include <dlfcn.h>
-#include "aclshmemi_hal.h"
-
-namespace MxFp8AllToAllMatmulExample {
-// group_size is the launcher's server boundary, not a discovered physical topology.
-inline std::string udmaDomain;
-} // namespace MxFp8AllToAllMatmulExample
-
-// Compatibility with the pinned SHMEM: its UBX generator uses the driver version
-// as the server ID. ELF interposition confines this correction to this executable;
-// the SHMEM SDK and its XML/EID discovery remain unchanged. Keep a strong symbol.
-__attribute__((visibility("default"), used, noinline)) std::string shm::topo::aclshmemi_hal_t::get_server_id()
-{
-    if (MxFp8AllToAllMatmulExample::udmaDomain.empty()) {
-        std::cerr << "UDMA domain must be configured before SHMEM topology discovery\n";
-        std::abort();
-    }
-    return MxFp8AllToAllMatmulExample::udmaDomain;
-}
-#endif
-
 namespace MxFp8AllToAllMatmulExample {
 inline constexpr auto OPERATOR_NAME = "Ascend950MxFp8AllToAllMatmul";
 inline constexpr auto EXECUTABLE_NAME = "a2a_matmul";
@@ -86,30 +64,6 @@ inline void ConfigureShmemLogger(uint32_t rank)
     // The external callback bypasses SHMEM's level filter and file/stdout sink.
     // Filter here, always retain errors, and flush before an uncaught exception.
     Check(aclshmemx_set_extern_logger(ShmemLogger), "set SHMEM logger");
-}
-
-inline void ConfigureUdmaDomain(uint32_t rank, uint32_t groupSize)
-{
-#if defined(ACLSHMEMI_RDMA_K_BACKEND_HNS_1825)
-    if (groupSize == 0) {
-        throw std::invalid_argument("group_size must be positive");
-    }
-    udmaDomain = "catccos_udma_group_" + std::to_string(rank / groupSize);
-    // Verify hook lookup using the host compiler's string ABI.
-#if defined(_GLIBCXX_USE_CXX11_ABI) && _GLIBCXX_USE_CXX11_ABI
-    constexpr const char* symbol = "_ZN3shm4topo15aclshmemi_hal_t13get_server_idB5cxx11Ev";
-#else
-    constexpr const char* symbol = "_ZN3shm4topo15aclshmemi_hal_t13get_server_idEv";
-#endif
-    using Getter = std::string (*)(shm::topo::aclshmemi_hal_t*);
-    auto getter = reinterpret_cast<Getter>(dlsym(RTLD_DEFAULT, symbol));
-    if (getter == nullptr || getter(&shm::topo::aclshmemi_hal_t::instance()) != udmaDomain) {
-        throw std::runtime_error("SHMEM topology hook is not active; rebuild the hierarchical example");
-    }
-#else
-    (void)rank;
-    (void)groupSize;
-#endif
 }
 
 inline AllToAllLayout::Layout GetLayout(const CocTilingParams& cocTiling)

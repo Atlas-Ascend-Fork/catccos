@@ -56,7 +56,7 @@ struct Layout {
     uint64_t recvScaleA = 0;
     uint64_t ready = 0;
     uint64_t readyFrontier = 0;
-    uint64_t readyValues = 0; // Immutable RDMA window sequence values.
+    uint64_t readyValues = 0; // Immutable network window sequence values.
     uint64_t symmetricBytes = 0;
 
     constexpr uint64_t SourceRow(uint32_t destination, uint32_t row) const
