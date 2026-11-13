@@ -52,6 +52,7 @@ public:
     using TileRemoteCopy = TileRemoteCopy_;
     using TileSwizzle = TileSwizzle_;
     using CopyTransport = detail::CopyTransport;
+    enum class RdmaCompletion { Wait, Deferred };
     static constexpr detail::CopyDirect RemoteCopyDirect = TileRemoteCopy::RemoteCopyDirect;
     static constexpr uint32_t UB_STAGE_BYTES = 32 * 1024;
     static constexpr uint32_t WQE_BYTES = 256;
@@ -110,15 +111,17 @@ public:
     }
 
     // gmSrc/gmDst include the outer window/block offsets; actualCommBlockShape is
-    // this call's extent. MTE waits before UB reuse; RDMA quiet is done in this block.
+    // this call's extent. MTE waits before UB reuse; RDMA waits by default.
     // UDMA NBI consumes its UB scratch on return, but GM data remains in flight.
     // Returns true for network submissions; callers must quiet UDMA before buffer
     // reuse, consuming Get destinations or publishing Put completion (e.g. Notify).
+    // Deferred RDMA requires caller-owned completion and stable GM sources until QuietRdma.
     CATLASS_DEVICE
     bool operator()(
         AscendC::GlobalTensor<ElementSrc> const& gmSrc, LayoutSrc const& layoutSrc,
         AscendC::GlobalTensor<ElementDst> const& gmDst, LayoutDst const& layoutDst,
-        MatrixCoord const& actualCommBlockShape, uint32_t rankIdx, CopyTransport transport, uint32_t qpNum = 1)
+        MatrixCoord const& actualCommBlockShape, uint32_t rankIdx, CopyTransport transport, uint32_t qpNum = 1,
+        RdmaCompletion rdmaCompletion = RdmaCompletion::Wait)
     {
         if (actualCommBlockShape.row() == 0 || actualCommBlockShape.column() == 0) {
             return false;
@@ -133,15 +136,27 @@ public:
                 break;
             case CopyTransport::Udma:
                 submitted = CopyNetwork<CopyTransport::Udma>(
-                    gmSrc, layoutSrc, gmDst, layoutDst, actualCommBlockShape, ubS, copyEventId, rankIdx, qpNum);
+                    gmSrc, layoutSrc, gmDst, layoutDst, actualCommBlockShape, ubS, copyEventId, rankIdx, qpNum,
+                    rdmaCompletion);
                 break;
             case CopyTransport::Rdma:
                 submitted = CopyNetwork<CopyTransport::Rdma>(
-                    gmSrc, layoutSrc, gmDst, layoutDst, actualCommBlockShape, ubS, copyEventId, rankIdx, qpNum);
+                    gmSrc, layoutSrc, gmDst, layoutDst, actualCommBlockShape, ubS, copyEventId, rankIdx, qpNum,
+                    rdmaCompletion);
                 break;
         }
         ubListId = (ubListId + 1 < UB_STAGES) ? (ubListId + 1) : 0;
         return submitted;
+    }
+
+    // Drain deferred requests before reusing GM sources or returning to the caller.
+    CATLASS_DEVICE
+    void QuietRdma(uint32_t rankIdx, uint32_t qpNum = 1)
+    {
+        auto scratch = reinterpret_cast<__ubuf__ uint8_t*>(ubSList[0].GetPhyAddr());
+        for (uint32_t qp = 0; qp < qpNum; ++qp) {
+            aclshmemx_roce_qp_quiet(rankIdx, qp, scratch + qp * WQE_BYTES, copyEventIdList[0]);
+        }
     }
 
 private:
@@ -192,7 +207,7 @@ private:
         AscendC::GlobalTensor<ElementSrc> const& gmSrc, LayoutSrc const& layoutSrc,
         AscendC::GlobalTensor<ElementDst> const& gmDst, LayoutDst const& layoutDst,
         MatrixCoord const& actualCommBlockShape, AscendC::LocalTensor<ElementSrc> const& ubS, uint32_t copyEventId,
-        uint32_t rankIdx, uint32_t qpNum)
+        uint32_t rankIdx, uint32_t qpNum, RdmaCompletion rdmaCompletion)
     {
         if (layoutSrc.stride(0) == actualCommBlockShape.column() &&
             layoutDst.stride(0) == actualCommBlockShape.column()) {
@@ -209,11 +224,14 @@ private:
                     copyEventId, rankIdx, qpNum);
             }
         }
-        // RDMA keeps its completion wait here; UDMA completion is the kernel's responsibility.
+        // UDMA completion is the kernel's responsibility; RDMA can defer it explicitly.
         if constexpr (Transport == CopyTransport::Rdma) {
-            for (uint32_t qp = 0; qp < qpNum; ++qp) {
-                aclshmemx_roce_qp_quiet(
-                    rankIdx, qp, reinterpret_cast<__ubuf__ uint8_t*>(ubS.GetPhyAddr()) + qp * WQE_BYTES, copyEventId);
+            if (rdmaCompletion == RdmaCompletion::Wait) {
+                for (uint32_t qp = 0; qp < qpNum; ++qp) {
+                    aclshmemx_roce_qp_quiet(
+                        rankIdx, qp, reinterpret_cast<__ubuf__ uint8_t*>(ubS.GetPhyAddr()) + qp * WQE_BYTES,
+                        copyEventId);
+                }
             }
         }
         return true;

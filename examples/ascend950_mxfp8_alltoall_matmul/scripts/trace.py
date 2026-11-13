@@ -26,8 +26,8 @@ NOTE = (
     'Each rank is independently aligned to its earliest device kernel entry. '
     'Cross-rank launch offsets are NOT measured. Within a rank, AIC/AIV share the device clock. '
     'Stages use the original Tik/Tok with PIPE_ALL barriers; tile scopes are not pure matrix-engine utilization. '
-    'UDMA and pipelined RDMA send scopes can end with ready still in flight; '
-    'Coordinator AIV_WAIT marks all-source wait and frontier publication; sender AIV_WAIT marks final quiet. '
+    'Sender AIV scopes include submission and Ready.Notify; RDMA completion is in the final AIV_WAIT. '
+    'Coordinator AIV_WAIT marks all-source wait and frontier publication. '
     'The coordinator wait end is an upper bound on observed incoming completion.'
 )
 
@@ -76,7 +76,7 @@ def read_rank(path, world, group_size, chunk_m, cycles_per_us, window_rows=512, 
         elif core < coordinator:
             route = 'MTE' if peer == rank else ('UDMA' if peer // group_size == rank // group_size else 'RDMA')
             name = f'AIV {core} -> peer {peer} QP 0 ({route})'
-            expected = {'AIV': windows, 'AIV_WAIT': int(route != 'MTE')}
+            expected = {'AIV': windows, 'AIV_WAIT': int(route == 'RDMA')}
         elif core == coordinator:
             name = f'AIV {core} coordinator'
             expected = {'AIV_WAIT': windows}
@@ -113,14 +113,14 @@ def read_rank(path, world, group_size, chunk_m, cycles_per_us, window_rows=512, 
                 elif stage == 'AIV':
                     details.update(peer=peer, qp=0, transport=route, window=index)
                 elif stage == 'AIV_WAIT' and core < coordinator:
-                    details.update(peer=peer, qp=0, transport=route, window=windows - 1, role='final_quiet')
+                    details.update(peer=peer, qp=0, transport=route, role='final_quiet')
                 else:
                     details.update(window=index, role='receive_window')
                 stages[stage].append((start, finish, tid, index))
                 event_name = LABELS[stage]
                 if stage == 'AIV_WAIT':
                     event_name = (
-                        'AIV wait all sources + publish frontier' if core == coordinator else f'AIV final {route} quiet'
+                        'AIV wait all sources + publish frontier' if core == coordinator else 'AIV final RDMA quiet'
                     )
                 events.append(
                     dict(

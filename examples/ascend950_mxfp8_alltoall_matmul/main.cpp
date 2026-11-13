@@ -217,20 +217,20 @@ void RunKernel(
             <<<blockNum, nullptr, stream>>>(deviceOp.params(), fftsAddr, iterationTimer);
         const auto kernelStatus = aclrtSynchronizeStream(stream);
         if (kernelStatus != ACL_SUCCESS) {
-            const size_t snapshotBytes = layout.readyValues - layout.ready;
+            const size_t snapshotBytes = layout.readyBytes;
             std::vector<uint8_t> snapshot(snapshotBytes);
             const auto copyStatus = aclrtMemcpy(
                 snapshot.data(), snapshotBytes, gmSymmetric + layout.ready, snapshotBytes, ACL_MEMCPY_DEVICE_TO_HOST);
             std::cerr << "READY_SNAPSHOT rank=" << rankId << " copy_status=" << copyStatus;
             if (copyStatus == ACL_SUCCESS) {
                 for (uint32_t source = 0; source < cocTiling.rankSize; ++source) {
-                    uint64_t value = 0;
+                    uint32_t value = 0;
                     const size_t offset = layout.ReadyOffset(source) - layout.ready;
                     std::memcpy(&value, snapshot.data() + offset, sizeof(value));
                     std::cerr << " source" << source << "=" << value;
                 }
-                uint64_t frontier = 0;
-                std::memcpy(&frontier, snapshot.data() + (layout.readyFrontier - layout.ready), sizeof(frontier));
+                uint32_t frontier = 0;
+                std::memcpy(&frontier, snapshot.data() + (layout.FrontierOffset() - layout.ready), sizeof(frontier));
                 std::cerr << " frontier=" << frontier;
             }
             std::cerr << std::endl;
@@ -451,7 +451,7 @@ int main(int argc, char** argv)
         attributes.runtime_config.udma_shared_jetty = ACLSHMEM_CONFIG_DISABLED;
         std::cout << "CONFIG rank=" << options.rankId << " world=" << options.rankSize << " device=" << resources.device
                   << " group_size=" << options.groupSize << " window_rows=" << options.windowRows
-                  << " rdma_qps=1 rdma_quiet=final"
+                  << " rdma_qps=1 rdma_quiet=final ready_notify=window"
                   << " active_aiv=" << requiredAiv << " symmetric_bytes=" << symmetricBytes
                   << " heap_bytes=" << heapBytes << std::endl;
         Check(aclshmemx_init_attr(ACLSHMEMX_INIT_WITH_DEFAULT, &attributes), "aclshmemx_init_attr");

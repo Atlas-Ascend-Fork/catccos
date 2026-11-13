@@ -194,7 +194,7 @@ fi
     printf 'K=%s\nlocalK=%s\nN=%s\n' "$K" "$LOCAL_K" "$N"
     sha256sum "$EXEC_BIN" "${PROJECT_ROOT}/build/bin/liba2a_matmul_impl.so"
     printf 'node_count=%s\nshmem_heap_mb=%s\n' "$NODE_COUNT" "$SHMEM_HEAP_MB"
-    printf 'window_rows=%s\nmatmul_tile_rows=256\nrdma_qps=1\nrdma_quiet=final\n' "$WINDOW_ROWS"
+    printf 'window_rows=%s\nmatmul_tile_rows=256\nrdma_qps=1\nrdma_quiet=final\nready_notify=window\n' "$WINDOW_ROWS"
 } > "$LOG_DIR/manifest.txt"
 if ! npu-smi info > "$LOG_DIR/preflight.txt" 2>&1; then
     fail "NPU query failed; idle status is unknown. See $LOG_DIR/preflight.txt"

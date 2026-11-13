@@ -18,8 +18,9 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
-#include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul_layout.h"
+#include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul.hpp"
 #include "operator_registry.h"
 #include "shmem.h"
 #include "host/utils/shmem_log.h"
@@ -123,7 +124,7 @@ inline void StageInputs(
         "stage scaleA");
 }
 
-// One-time workspace initialization; immutable ready values are reused across calls.
+// Initialize receive padding and the shared readiness workspace.
 inline void InitializeSymmetricBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric)
 {
     const auto layout = GetLayout(cocTiling);
@@ -132,21 +133,24 @@ inline void InitializeSymmetricBuffer(const CocTilingParams& cocTiling, uint8_t*
     const size_t recvBytes = static_cast<size_t>(cocTiling.rankSize) * layout.recvSlotRows * layout.localK;
     Check(aclrtMemset(symmetric + layout.recvA, recvBytes, 0, recvBytes), "clear receive A");
     Check(aclrtMemset(symmetric + layout.recvScaleA, scaleBytes, 127, scaleBytes), "clear receive scaleA");
-    std::vector<uint64_t> readyValues(layout.windowCount);
+    Check(aclrtMemset(symmetric + layout.ready, layout.readyBytes, 0, layout.readyBytes), "initialize ready");
+    std::vector<uint32_t> readyValues(layout.windowCount);
     for (uint32_t window = 0; window < layout.windowCount; ++window) {
         readyValues[window] = window + 1;
     }
-    const size_t readyBytes = readyValues.size() * sizeof(uint64_t);
+    const size_t readyValueBytes = readyValues.size() * sizeof(uint32_t);
     Check(
         aclrtMemcpy(
-            symmetric + layout.readyValues, readyBytes, readyValues.data(), readyBytes, ACL_MEMCPY_HOST_TO_DEVICE),
-        "initialize window sequence values");
+            symmetric + layout.readyValues, readyValueBytes, readyValues.data(), readyValueBytes,
+            ACL_MEMCPY_HOST_TO_DEVICE),
+        "initialize immutable ready values");
 }
 
 inline void ResetSyncBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric, aclrtStream stream)
 {
     const auto layout = GetLayout(cocTiling);
-    const size_t bytes = layout.readyValues - layout.ready;
+    // The previous call completed on every rank before this reset; never reset between windows.
+    const size_t bytes = layout.readyBytes;
     Check(aclrtMemsetAsync(symmetric + layout.ready, bytes, 0, bytes, stream), "reset ready/frontier");
 }
 } // namespace MxFp8AllToAllMatmulExample

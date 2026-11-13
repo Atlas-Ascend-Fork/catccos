@@ -18,11 +18,11 @@
 
 K、N 在运行时指定，默认 `K=rankSize×256、N=4096`。`localK` 须为 64 的正整数倍，`N` 须为 16 的正整数倍。L1 K tile 自动选择能整除 localK 的 256/128/64；N 支持不足 256 列的尾块。AScale 等价于 `[rankSize, M, localK/32]`，调用方无需补齐行数。SHMEM 接收区仍在内部对齐各来源槽位，不影响紧凑的输出 `C[M,N]`。旧版带行填充的 AScale 文件需重新生成，`data.json` 版本检查会拒绝复用旧数据。
 
-通信使用本卡 MTE、同机 UDMA、跨机 RDMA，统一调用分层 block 接口，MTE 通过 `TileSwizzle` 分块搬运。A、AScale、ready 分开存放，每个 peer 由一个 AIV 负责，网络通信使用 QP0。每个窗口先发送 A 和 AScale：MTE/RDMA 在 block 返回前完成，UDMA 由调用处 quiet 确认完成；随后发送并完成 ready 标记，接收端协调核等齐所有来源后推进计算窗口。通信窗口默认 512 行，MatMul 的 M tile 固定为 256 行。
+通信使用本卡 MTE、同机 UDMA、跨机 RDMA，由 `HierarchicalCommSwizzle` 选择路径并划分每窗的通信块。A、AScale 分别遍历通信块，再由 `TileHierarchicalReady::Notify` 通知接收端。每个 peer 由一个 AIV 负责，网络通信使用 QP0。RDMA 依赖 HNS_1825 单 QP 保序，每窗连续提交 A、AScale、ready，全部窗口提交后只 quiet 一次；每窗 ready 发送值预先初始化并保持只读，所有 peer 共用。UDMA/MTE 仍等待数据完成后发布 ready。独立协调 AIV 调用 `WaitAll` 推进 frontier，AIC 通过 `WaitReady` 等待对应窗口。ready 使用公共模板的 32 位计数和 64 B 槽位，只在所有卡上一轮结束后清零，固定发送值不清零。通信窗口默认 512 行，MTE 通信块为 64 行，MatMul 的 M tile 固定为 256 行。
 
 ## 构建
 
-两台机器使用相同代码和依赖版本，先加载本机 CANN、RDMA provider 环境。原主线已验证环境为 CANN `9.2.T101`、SHMEM `f34a2ce`、RDMA 后端 `HNS_1825`。本分支使用 SHMEM `v1.8.0`（`ed07fa6`），由 SHMEM 原生发现服务器身份，已移除旧版 `get_server_id()` 覆盖；该依赖组合仍需重新上机验证。
+两台机器使用相同代码和依赖版本，先加载本机 CANN、RDMA provider 环境。当前已验证环境为 CANN `9.2.T101`、RDMA 后端 `HNS_1825`。
 数据生成和校验需要 Python 3.10+ 与 NumPy。
 
 从仓库根目录执行，后续命令均在示例目录中运行：

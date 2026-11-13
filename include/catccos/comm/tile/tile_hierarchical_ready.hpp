@@ -20,7 +20,7 @@
 namespace Catccos::Comm::Tile {
 
 // Receiver readiness for Put windows: each source publishes ready[source] at its
-// destination after completing both data and scales. One local coordinator merges
+// destination after completed or ordered writes of both data and scales. One local coordinator merges
 // all sources into a frontier; consumers wait that frontier before loading data.
 // This is not a global barrier and does not acknowledge consumption.
 class TileHierarchicalReady {
@@ -53,12 +53,19 @@ public:
     // MTE is supported only for self; network transport must match the scheduler.
     // epoch starts at 1 and increases without wrapping, identically on all ranks.
     // Do not reset slots between windows or overwrite unconsumed payload buffers.
+    // immutableEpoch optionally points to a preinitialized symmetric value equal to epoch.
+    // On a single ordered RDMA QP, it permits notification without quiet; keep it and
+    // the payload unchanged until the caller drains QP0. Other paths retain completion waits.
     CATLASS_DEVICE
     void Notify(
         uint32_t peer, CopyTransport transport, uint32_t epoch, uint32_t qpNum, __ubuf__ uint32_t* scratch,
-        uint32_t eventId)
+        uint32_t eventId, __gm__ uint32_t* immutableEpoch = nullptr)
     {
         auto dst = ptrWorkspace + rankIdx * SLOT_WORDS;
+        if (transport == CopyTransport::Rdma && qpNum == 1 && immutableEpoch != nullptr) {
+            aclshmemx_roce_qp_put_nbi<uint32_t>(dst, immutableEpoch, scratch, 1, peer, 0, eventId);
+            return;
+        }
         if (transport == CopyTransport::Mte) {
             AscendC::SetFlag<AscendC::HardEvent::MTE3_S>(eventId);
             AscendC::WaitFlag<AscendC::HardEvent::MTE3_S>(eventId);
