@@ -300,6 +300,7 @@ foreach(EXAMPLE
     gmm_alltoallv_v2
     ascend950_mxfp8_matmul_reduce_scatter
     ascend950_mxfp8_matmul_alltoall
+    ascend950_quant_matmul_alltoall
     dispatch_ffn_combine
     ascend950_dispatch_ffn_combine
     ascend950_dispatch

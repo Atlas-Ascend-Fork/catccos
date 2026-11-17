@@ -84,6 +84,7 @@ enum CocCommType {
     GROUPED_MATMUL_ALLTOALLV_SMALL_M,
     ASCEND950_DISPATCH,
     ASCEND950_MXFP8_ALLTOALL_MATMUL,
+    ASCEND950_QUANT_MATMUL_ALLTOALL,
     ASCEND950_HIERARCHICAL_ALLTOALL,
     TYPE_NUM,
     UNKNOWN
@@ -243,6 +244,7 @@ const std::map<std::string, CocCommType> CommTypeMap = {
     {"moe", CocCommType::DISPATCH_FFN_COMBINE},
     {"a5moe", CocCommType::ASCEND950_DISPATCH_FFN_COMBINE},
     {"a5dispatch", CocCommType::ASCEND950_DISPATCH},
+    {"a5qmma", CocCommType::ASCEND950_QUANT_MATMUL_ALLTOALL},
     {"a5agmmudma", CocCommType::ASCEND950_ALLGATHER_MATMUL_UDMA},
     {"a5mxfp8atamm", CocCommType::ASCEND950_MXFP8_ALLTOALL_MATMUL},
     {"a5mxfp8atammsplitkurma", CocCommType::ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA},
@@ -301,6 +303,7 @@ const std::map<CocCommType, std::string> CommTypeOpNameMap = {
     {ASCEND950_MXFP8_ALLTOALL_MATMUL, "Ascend950MxFp8AllToAllMatmul"},
     {ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA, "Ascend950MxFp8AllToAllMatmulSplitKUrma"},
     {ASCEND950_DISPATCH, "Ascend950Dispatch"},
+    {ASCEND950_QUANT_MATMUL_ALLTOALL, "Ascend950QuantMatmulAllToAll"},
 };
 
 inline int32_t CeilDev(int32_t num, int32_t div)
