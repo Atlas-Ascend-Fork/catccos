@@ -1,6 +1,6 @@
 # Communication API end-to-end tests
 
-These tests compile CATCCOS DSL kernels, launch them on real Ascend 950 NPUs,
+These tests compile CATCCOS DSL kernels, launch them on NPUs in Ascend 950PR&950DT products,
 and compare every rank's FP32 output with an exact CPU reference. No compiler,
 device operation or SHMEM call is mocked.
 
@@ -35,7 +35,7 @@ Coverage:
 
 Ordinary single-process pytest runs skip this directory before importing NPU
 dependencies. Distributed runs skip if native bindings, SHMEM, the compiler or
-Ascend 950 hardware are unavailable. Compilation and numerical errors fail all
+hardware from Ascend 950PR&950DT products are unavailable. Compilation and numerical errors fail all
 ranks together. Each rank uses its own temporary compilation cache, and SHMEM
 allocations are freed before the process group is destroyed.
 

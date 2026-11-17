@@ -32,14 +32,7 @@ catccos
 
 - 硬件平台:
   - **CPU**: `aarch64`/`x86_64`
-  - **NPU**: `Atlas A2 训练系列产品`/`Atlas A3 训练系列产品`/`Atlas 800I A2 推理产品`/`A200I A2 Box 异构组件`/`Atlas 350 加速卡`
-    - `Atlas 800T A2 训练服务器`
-    - `Atlas 900 A2 PoD 集群基础单元`
-    - `Atlas 200T A2 Box16 异构子框`
-    - `Atlas A3 训练系列产品`
-    - `Atlas 800I A2 推理服务器`
-    - `A200I A2 Box 异构组件`
-    - `Atlas 350 加速卡`（`Ascend950PR`/`Ascend950DT`）
+  - **NPU**: Atlas A2系列产品、Atlas A3系列产品、Ascend 950PR&950DT系列产品
   - 各算子的具体硬件支持范围以[算子总览](docs/operators.md)中的“硬件平台”列为准。
 
   安装 CANN 时，请参考 [CANN 快速安装](https://www.hiascend.com/cann/download?versionId=794&ids=d803%2Ch0501%2Ch0601%2Ch0703&currentTab=1)，按版本、产品系列、CPU 架构和操作系统下载对应软件包，并执行页面提供的安装命令。不确定产品系列时，点击页面中的“我不知道硬件信息”按提示确认。
@@ -81,10 +74,10 @@ chmod +x Ascend-cann-toolkit_<version>_linux-<arch>.run
 2. 配置环境变量(可选)
 
   ```bash
-  # 用于统一配置 CANN、SHMEM、CATLASS 相关环境变量（A2 默认）
+  # 用于统一配置 CANN、SHMEM、CATLASS 相关环境变量（默认使用Atlas A2系列产品的SHMEM构建配置）
   source ./examples/utils/setup.sh
 
-  # Ascend950 算子需指定 soc 类型（首次编译 SHMEM 时生效）
+  # Ascend 950PR&950DT系列产品的算子需指定 SoC 类型（首次编译 SHMEM 时生效）
   source ./examples/utils/setup.sh -soc_type Ascend950
   ```
 

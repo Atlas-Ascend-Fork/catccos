@@ -1,8 +1,8 @@
-# Ascend950 Dispatch
+# `ascend950_dispatch` 示例
 
 ## 功能说明
 
-Ascend950 Dispatch 面向 MoE 专家并行（Expert Parallel，EP）场景，将本 rank 的 BF16 token
+本示例面向 MoE 专家并行（Expert Parallel，EP）场景，将本 rank 的 BF16 token
 按行动态量化为 INT8，再根据专家路由发送到目标 rank，输出 INT8 token、反量化 scale 和路由元数据。
 通信使用 SHMEM 对称内存与 MTE Put；计算专家选择的 gating/top-k 网络不属于本算子。
 
@@ -15,7 +15,7 @@ Ascend950 Dispatch 面向 MoE 专家并行（Expert Parallel，EP）场景，将
 
 本文描述 example 的 **BF16 输入 → 动态 INT8 量化 → INT8 通信 → INT8 输出**配置。
 两个device配置均显式指定 `BlockQuantizeBf16Int8`，不根据输出类型自动选择FP8量化。
-目标平台为 Ascend950；调用入口为本 example 的原生 C++ 程序。
+目标平台为Ascend 950PR&950DT系列产品；调用入口为本 example 的原生 C++ 程序。
 
 ## 参数说明
 
@@ -225,7 +225,7 @@ quantize(resource, input, output, scales, rows, hidden, aicoreIdx, aicoreNum);
 
 ## 构建与精度测试
 
-以下命令均在 **CATCCOS仓库根目录**执行。准备Ascend950的CANN/Bisheng、SHMEM及Python 3环境；
+以下命令均在 **CATCCOS仓库根目录**执行。准备Ascend 950PR&950DT系列产品的CANN/Bisheng、SHMEM及Python 3环境；
 构建脚本调用仓库 `examples/utils/setup.sh` 配置依赖。
 
 ```bash

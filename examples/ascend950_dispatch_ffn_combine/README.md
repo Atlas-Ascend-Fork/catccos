@@ -1,6 +1,6 @@
-# Ascend950 Dispatch FFN Combine 示例
+# `ascend950_dispatch_ffn_combine` 示例
 
-本示例在 Ascend950 上完成 MoE 的 routing、dispatch、两段 FFN、combine 和 unpermute。算子输入输出为 BF16，FFN 的两段矩阵乘使用 E4M3 数据与 E8M0 block scale。
+本示例在Ascend 950PR&950DT系列产品上完成 MoE 的 routing、dispatch、两段 FFN、combine 和 unpermute。算子输入输出为 BF16，FFN 的两段矩阵乘使用 E4M3 数据与 E8M0 block scale。
 
 主要执行流程如下：
 
@@ -33,7 +33,7 @@ ascend950_dispatch_ffn_combine/
 
 ## 环境准备
 
-- Ascend950 NPU，驱动与 CANN 环境可用。
+- Ascend 950PR&950DT系列产品的NPU，驱动与 CANN 环境可用。
 - 仓库依赖已初始化，CATLASS 与 ACLSHMEM 已完成构建和安装。
 - `3rdparty/shmem/install/set_env.sh` 存在且可正常加载。
 - Python 3 已安装 PyTorch、NumPy 和 SciPy；安装 `torch_npu` 时使用 NPU 生成 golden，否则自动回退到 CPU。
@@ -123,7 +123,7 @@ M,K,N
 
 ## PyTorch eager 接入
 
-在已安装 CANN 和 torch_npu 的环境下，从仓库根目录构建 A5 binding。
+在已安装 CANN 和 torch_npu 的环境下，从仓库根目录构建Ascend 950PR&950DT系列产品的PyTorch绑定。
 
 ```bash
 source examples/utils/setup.sh -soc_type Ascend950

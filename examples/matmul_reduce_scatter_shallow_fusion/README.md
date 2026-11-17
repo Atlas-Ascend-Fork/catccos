@@ -1,6 +1,6 @@
 # MatmulReduceScatterShallowFusion
 
-本示例通过主干 `OperatorRegistry` / `CatccosOperator` 和 SHMEM 调用迁移模板。支持 Atlas A2、FP16、RowMajor A，以及 RowMajor/ColumnMajor B（transB=0/1）。
+本示例通过主干 `OperatorRegistry` / `CatccosOperator` 和 SHMEM 调用迁移模板。支持Atlas A2系列产品、FP16、RowMajor A，以及 RowMajor/ColumnMajor B（transB=0/1）。
 
 在仓库根目录、已初始化 conda 的 Bash 中执行。编译依赖及工具版本要求见[仓库环境准备](../../README.md)。Python 环境需安装相互兼容的 `torch`、`torch_npu`、`numpy`、`scipy`；双标杆生成会实际调用 NPU。当前验证环境为 CANN 9.1.1、PyTorch/torch_npu 2.12.0、`zystorch` 环境。
 
@@ -18,7 +18,7 @@ CATCCOS_SEED=2026 bash examples/matmul_reduce_scatter_shallow_fusion/scripts/run
     /tmp/catccos-build/bin "$run_root/case"
 ```
 
-`0,2` 是两张设备的示例，请替换为本机可用且支持 SHMEM 互访的设备 ID。构建目录首次使用时应为空或不存在，后续可由本分支的四个样例共享；切换源码目录、CANN/SHMEM 安装或 A5 架构后应另用新目录，避免沿用旧 CMake 缓存。本例编译目标为 A2（dav-c220）。运行时保留完整 `bin` 目录，其中包含可执行文件及其依赖的 `libmatmul_reduce_scatter_shallow_fusion_impl.so`，并在运行终端加载上述环境。
+`0,2` 是两张设备的示例，请替换为本机可用且支持 SHMEM 互访的设备 ID。构建目录首次使用时应为空或不存在，后续可由本分支的四个样例共享；切换源码目录、CANN/SHMEM 安装，或切换到Ascend 950PR&950DT系列产品后应另用新目录，避免沿用旧 CMake 缓存。本例面向Atlas A2系列产品，编译目标为 `dav-c220`。运行时保留完整 `bin` 目录，其中包含可执行文件及其依赖的 `libmatmul_reduce_scatter_shallow_fusion_impl.so`，并在运行终端加载上述环境。
 
 CSV 批量回归（读取本样例的 [scripts/test_shapes.csv](scripts/test_shapes.csv)）：
 

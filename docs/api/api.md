@@ -251,9 +251,9 @@ public:
 | `alltoallv_gmm_v2.hpp` | AllToAllV + GMM v2 |
 | `alltoallv_gmm_dequant_v2.hpp` | AllToAllV + Dequant GMM v2 |
 | `gmm_alltoallv_v2.hpp` | GMM + AllToAllV v2 |
-| `ascend950_allgather_matmul.hpp` | Atlas 350 AllGather + MatMul |
-| `ascend950_alltoall_matmul.hpp` | Atlas 350 AllToAll + MatMul |
-| `ascend950_matmul_alltoall.hpp` | Atlas 350 MatMul + AllToAll |
+| `ascend950_allgather_matmul.hpp` | Ascend 950PR&950DT系列产品 AllGather + MatMul |
+| `ascend950_alltoall_matmul.hpp` | Ascend 950PR&950DT系列产品 AllToAll + MatMul |
+| `ascend950_matmul_alltoall.hpp` | Ascend 950PR&950DT系列产品 MatMul + AllToAll |
 | `mx_allgather_matmul.hpp` | MX AllGather + MatMul |
 
 ### Comm Kernel（`include/catccos/comm/kernel/`）

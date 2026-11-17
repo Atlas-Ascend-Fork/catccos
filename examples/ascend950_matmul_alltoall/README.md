@@ -7,7 +7,7 @@
    bash scripts/build.sh
    ```
 
-2. **运行MatMul-AllToAll-Ascend950示例程序**
+2. **运行 `ascend950_matmul_alltoall` 示例程序**
    在示例目录下执行运行脚本：
    ```bash
    bash scripts/run.sh <device_list>

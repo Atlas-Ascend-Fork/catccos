@@ -11,17 +11,17 @@
 
 ## 1. 编译项目
 
-进入测试目录并执行编译脚本。默认编译 A2（dav-c220）算子；通过 `-soc_type Ascend950` 可**额外**编译 Ascend950（a5agmm / a5mmrs）算子。
+进入测试目录并执行编译脚本。默认编译面向Atlas A2系列产品的算子（编译目标：`dav-c220`）；通过 `-soc_type Ascend950` 可**额外**编译Ascend 950PR&950DT系列产品（a5agmm / a5mmrs）算子。
 
 > 说明：`tests/dynamic_tiling` 与 `examples/` 算子独立配置。编译 example 时不会加载本测试目录；仅运行本目录下 `scripts/build.sh` 时才会出现 `tests/dynamic_tiling:` 相关日志。
 
 ```bash
 cd tests/dynamic_tiling
 
-# 默认仅 A2（agmm / mmrs / mmar 等）
+# 默认仅构建面向Atlas A2系列产品的算子（dav-c220，如 agmm / mmrs / mmar）
 bash scripts/build.sh
 
-# A2 + Ascend950（在 A2 基础上额外编译 a5agmm / a5mmrs）
+# 在Atlas A2系列产品的构建基础上，额外构建Ascend 950PR&950DT系列产品的算子（a5agmm / a5mmrs）
 bash scripts/build.sh -soc_type Ascend950
 ```
 
@@ -62,7 +62,7 @@ bash scripts/run.sh <kernel_name> <data_type> [test_start_line] [test_collect_ro
   bash scripts/run.sh "agmm" 27 0 10 4,5,6,7
   ```
 
-- **Ascend950 算子示例**（FP16，`libkernel_fp16_ascend950.so`）：
+- **Ascend 950PR&950DT系列产品算子示例**（FP16，`libkernel_fp16_ascend950.so`）：
   ```bash
   bash scripts/run.sh "a5agmm" 1 0,1          # AllGather-MatMul 精度
   bash scripts/run.sh "a5mmrs" 1 0,1         # MatMul-ReduceScatter 精度

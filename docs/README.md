@@ -47,8 +47,8 @@ include/catccos/
 
 | 平台标识 | 说明 |
 |---------|------|
-| **Atlas A2/A3** | 标注为 `Atlas A2/A3` 的算子同时支持 Atlas A2 与 Atlas A3 |
-| **Atlas 350** | 标注为 `Atlas 350` 的算子仅支持 Atlas 350 平台，示例目录前缀为 `ascend950_*` |
+| **Atlas A2系列产品、Atlas A3系列产品** | 标注这两个产品系列的算子同时支持Atlas A2系列产品和Atlas A3系列产品 |
+| **Ascend 950PR&950DT系列产品** | 标注为“Ascend 950PR&950DT系列产品”的算子仅支持该产品系列，示例目录前缀为 `ascend950_*` |
 
 算子与平台的对应关系见 [算子总览](operators.md)。
 

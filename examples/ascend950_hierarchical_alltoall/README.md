@@ -1,4 +1,4 @@
-# Ascend950 分层 AllToAll
+# `ascend950_hierarchical_alltoall` 示例
 
 源 rank `r` 的 `input[p]` Put 到 rank `p` 的 `output[r]`。每个 peer 的数据是等量的
 `Element` RowMajor 矩阵，并传输对应的 `ElementScale` scale 矩阵。单机和跨机使用同一 kernel：self 走 MTE，同机走 UDMA，跨机走 RDMA。
@@ -113,7 +113,7 @@ v1.8.0 已修复服务器标识的获取：优先使用驱动返回的 super-pod
 已有 rootinfo 仍遵循 SHMEM 的文件优先规则。
 `GROUP_SIZE` 只控制本例的同组/跨组通信选择，仍须与实际服务器边界一致。
 
-需要目标机 Linux、Ascend950、匹配的 CANN/Bisheng 和 RDMA provider。
+需要目标机 Linux、Ascend 950PR&950DT系列产品、匹配的 CANN/Bisheng 和 RDMA provider。
 网卡、驱动及 `IBV_EXTEND_DRIVERS` 配置参考
 [SHMEM RDMA 环境要求](https://gitcode.com/cann/shmem/blob/v1.8.0/examples/rdma_demo/README.md)。
 以下使用 HNS_1825 后端，在 CATCCOS 仓库根目录执行：

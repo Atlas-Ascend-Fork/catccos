@@ -1,6 +1,6 @@
 # CATCCOS TLA_DIST DSL — Matmul-ReduceScatter
 
-This minimal extension provides one end-to-end Ascend 950 example:
+This minimal extension provides one end-to-end example for Ascend 950PR&950DT products:
 `examples/fusion_ops/matmul_reduce_scatter.py`. For rank `r`, its output is
 `sum(A_p @ B_p for p in ranks)[r * (M / world_size):(r + 1) * (M / world_size), :]`.
 Inputs use matching FP16 or BF16 dtypes and row-major or column-major layouts;
@@ -190,7 +190,7 @@ example through the compiler pipeline. Native tests skip when `catlass._mlir.ir`
 unavailable; CPU-only results do not establish native compilation or NPU
 correctness. Communication device correctness is covered by
 [`tests/end_to_end`](tests/end_to_end/README.md), which runs real kernels on
-two or more Ascend 950 ranks:
+two or more ranks on Ascend 950PR&950DT products:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 \
@@ -201,7 +201,7 @@ These tests cover MTE GET/PUT, GM↔UB routes, atomic ADD, padded/tail tiles,
 dynamic descriptors, scratch reuse and device barrier visibility. Ordinary
 single-process pytest skips them. The distributed example additionally checks
 the fused Matmul-ReduceScatter result. Four atomic PUT cases are explicitly
-skipped because the current Ascend 950 runtime hangs during their execution;
+skipped because the current runtime for Ascend 950PR&950DT products hangs during their execution;
 see the end-to-end test README for details.
 
 CI can build and run both suites from the repository root with

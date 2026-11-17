@@ -1,4 +1,4 @@
-# Ascend950 MxFP8 MatMul + AllToAll（切 M 轴 / 切 N 轴）
+# `ascend950_mxfp8_matmul_alltoall` 示例（切 M 轴 / 切 N 轴）
 
 ## 功能说明
 
@@ -71,7 +71,7 @@
    bash scripts/build.sh
    ```
 
-2. **运行Ascend950-MxFP8-MatMul-AllToAll示例程序**
+2. **运行 `ascend950_mxfp8_matmul_alltoall` 示例程序**
    在示例目录下执行运行脚本：
    ```bash
    bash scripts/run.sh <device_list>
@@ -79,7 +79,7 @@
 
    - **参数说明**：
      - `device_list`：指定用于运行的设备（NPU）编号列表，以逗号分隔。
-     - 示例：使用第6和第7个NPU设备运行2卡Ascend950-MxFP8-MatMul-AllToAll示例：
+     - 示例：使用第6和第7个NPU设备运行 `ascend950_mxfp8_matmul_alltoall` 双卡示例：
        ```bash
        bash scripts/run.sh 6,7
        ```

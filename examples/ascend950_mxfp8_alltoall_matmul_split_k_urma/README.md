@@ -1,6 +1,6 @@
-# Ascend950 MXFP8 AllToAll MatMul Split-K URMA
+# `ascend950_mxfp8_alltoall_matmul_split_k_urma` 示例
 
-本示例演示 Ascend950 上基于 URMA 通信的 MXFP8 split-K AllToAll MatMul，并提供默认实现和
+本示例演示Ascend 950PR&950DT系列产品上基于 URMA 通信的 MXFP8 split-K AllToAll MatMul，并提供默认实现和
 原子累加实现。
 
 ## 功能说明

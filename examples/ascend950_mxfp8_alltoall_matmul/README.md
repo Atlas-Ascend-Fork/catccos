@@ -1,6 +1,6 @@
-# Ascend950 MXFP8 AllToAll MatMul
+# `ascend950_mxfp8_alltoall_matmul` 示例
 
-在 Ascend950 上按 M 窗口重叠 AllToAll 通信与 MatMul 计算。AIV 负责搬运和就绪通知，AIC 在窗口数据齐备后计算，使用 FP32 累加并输出 BF16。
+在Ascend 950PR&950DT系列产品上按 M 窗口重叠 AllToAll 通信与 MatMul 计算。AIV 负责搬运和就绪通知，AIC 在窗口数据齐备后计算，使用 FP32 累加并输出 BF16。
 
 ## 输入与约束
 

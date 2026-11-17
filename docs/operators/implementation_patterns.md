@@ -86,7 +86,7 @@ main.cpp
 
 ## 2. AllGather + MatMul
 
-**适用算子**：`allgather_matmul`、`allgather_matmul_with_gather_result`、`allgather_matmul_remote_read`、`allgather_matmul_rdma` 等，运行于 **Atlas A2/A3** 平台；Atlas 350 变体见第 6、7 节。
+**适用算子**：`allgather_matmul`、`allgather_matmul_with_gather_result`、`allgather_matmul_remote_read`、`allgather_matmul_rdma` 等，运行于 **Atlas A2系列产品、Atlas A3系列产品**；Ascend 950PR&950DT系列产品变体见第 6、7 节。
 
 **通信语义**：各 rank 持有 A 矩阵的局部行，通过 AllGather 将完整 A 汇聚到对称内存，再执行 `C = A_full × B`。
 
@@ -127,7 +127,7 @@ Remote Read 变体通过 `allgather_matmul_with_remote_read.hpp` 直接从远端
 
 ## 3. MatMul + ReduceScatter / AllReduce
 
-**适用算子**：`matmul_reduce_scatter`、`matmul_allreduce` 等，运行于 **Atlas A2/A3** 平台；Atlas 350 变体（`ascend950_matmul_reduce_scatter`、`ascend950_mxfp8_matmul_reduce_scatter`）见第 6 节。
+**适用算子**：`matmul_reduce_scatter`、`matmul_allreduce` 等，运行于 **Atlas A2系列产品、Atlas A3系列产品**；Ascend 950PR&950DT系列产品变体（`ascend950_matmul_reduce_scatter`、`ascend950_mxfp8_matmul_reduce_scatter`）见第 6 节。
 
 **通信语义**：各 rank 独立计算局部 C，再通过 ReduceScatter 或 AllReduce 将结果按行/全局规约到目标 rank。
 
@@ -155,7 +155,7 @@ flowchart LR
 
 ## 4. 量化融合
 
-**适用算子**：`allgather_matmul_dequant*`、`matmul_dequant_reduce_scatter_v2`、`dispatch_gmm_dequant_swiglu` 等，运行于 **Atlas A2/A3** 平台。
+**适用算子**：`allgather_matmul_dequant*`、`matmul_dequant_reduce_scatter_v2`、`dispatch_gmm_dequant_swiglu` 等，运行于 **Atlas A2系列产品、Atlas A3系列产品**。
 
 **实现要点**：
 
@@ -176,7 +176,7 @@ flowchart LR
 
 ## 5. MoE / GroupedMatMul + AllToAllV
 
-**适用算子**：`grouped_matmul_alltoallv*`、`alltoallv_*`、`dispatch_*`、`gmm_alltoallv_v2`、`dispatch_ffn_combine` 等，运行于 **Atlas A2/A3** 平台。
+**适用算子**：`grouped_matmul_alltoallv*`、`alltoallv_*`、`dispatch_*`、`gmm_alltoallv_v2`、`dispatch_ffn_combine` 等，运行于 **Atlas A2系列产品、Atlas A3系列产品**。
 
 **通信语义**：MoE 场景下 token 按 expert 路由，通过 AllToAllV 在各 rank 间交换 token，再执行分组 GEMM（GMM）。
 
@@ -202,14 +202,14 @@ flowchart TD
 
 ---
 
-## 6. Atlas 350 通用融合
+## 6. Ascend 950PR&950DT系列产品通用融合
 
-**适用算子**：`ascend950_*` 前缀示例（不含 MX 量化与纯通信类），运行于 **Atlas 350** 平台。
+**适用算子**：`ascend950_*` 前缀示例（不含 MX 量化与纯通信类），运行于 **Ascend 950PR&950DT系列产品**。
 
 **实现要点**：
 
-- 使用 Atlas 350 架构 tag 与专用 dispatch policy
-- 编译需开启 `CATCCOS_ENABLE_A5_BUILD`（Atlas 350 构建）
+- 使用 `Catlass::Arch::Ascend950` 架构标签与专用 dispatch policy
+- 编译需开启 `CATCCOS_ENABLE_A5_BUILD`
 - AllToAll 类算子（`ascend950_alltoall_matmul`、`ascend950_matmul_alltoall`）通信模式为 AllToAll 而非 AllGather/ReduceScatter
 - TLA 路径用于部分 ReduceScatter 与 GroupedMatMul 变体
 
@@ -225,9 +225,9 @@ flowchart TD
 
 ---
 
-## 7. Atlas 350 MX 量化
+## 7. Ascend 950PR&950DT系列产品 MX 量化
 
-**适用算子**：`ascend950_fp8_mx_*`、`ascend950_fp4_mx_*`，运行于 **Atlas 350** 平台。
+**适用算子**：`ascend950_fp8_mx_*`、`ascend950_fp4_mx_*`，运行于 **Ascend 950PR&950DT系列产品**。
 
 **实现要点**：
 
@@ -241,7 +241,7 @@ flowchart TD
 
 ## 8. 纯通信 / 量化通信
 
-**适用算子**：`ascend950_quant_allgather`、`ascend950_quant_alltoall`、`ascend950_mx_quant_allgather`，运行于 **Atlas 350** 平台。
+**适用算子**：`ascend950_quant_allgather`、`ascend950_quant_alltoall`、`ascend950_mx_quant_allgather`，运行于 **Ascend 950PR&950DT系列产品**。
 
 **实现要点**：
 

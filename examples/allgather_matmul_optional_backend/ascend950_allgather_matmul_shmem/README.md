@@ -1,4 +1,4 @@
-# Ascend950 AllGather Matmul 可选后端 SHMEM 示例
+# `ascend950_allgather_matmul_shmem` 示例（可选 SHMEM 后端）
 
 该示例使用 `Ascend950AllGatherMatmulWithLocalOptionalBackend` 模板，并选择
 `Catccos::Arch::ShmemComm` 作为通信后端。SHMEM 后端负责解析各 rank 的
@@ -13,7 +13,7 @@
    bash scripts/build.sh
    ```
 
-2. **运行AllGather-MatMul-Ascend950示例程序**
+2. **运行 `ascend950_allgather_matmul_shmem` 示例程序**
    在示例目录下执行运行脚本：
    ```bash
    bash scripts/run.sh <device_list>
@@ -21,7 +21,7 @@
 
    - **参数说明**：
      - `device_list`：指定用于运行的设备（NPU）编号列表，以逗号分隔。
-     - 示例：使用第6和第7个NPU设备运行2卡AllGather-MatMul-Ascend950示例：
+     - 示例：使用第6和第7个NPU设备运行 `ascend950_allgather_matmul_shmem` 双卡示例：
        ```bash
        bash scripts/run.sh 6,7
        ```
