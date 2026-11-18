@@ -41,6 +41,7 @@
 #include "ascend950_mx_quant_allgather/mx_quant_allgather_host.h"
 #include "ascend950_mxfp8_alltoall_matmul_split_k_urma/ascend950_mxfp8_alltoall_matmul_split_k_urma_host.h"
 #include "ascend950_mxfp8_matmul_alltoall/ascend950_mxfp8_matmul_alltoall_host.h"
+#include "ascend950_matmul_reduce_scatter_udma/ascend950_matmul_reduce_scatter_udma_host.h"
 #endif
 
 #endif // OPERATOR_HOST_H

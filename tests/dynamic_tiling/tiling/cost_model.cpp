@@ -38,6 +38,7 @@ CostModelHardwareType GetCostModelHardwareType(CocCommType type)
         case ASCEND950_FP4_MX_MATMUL_REDUCE_SCATTER:
         case ASCEND950_DISPATCH_FFN_COMBINE:
         case ASCEND950_ALLGATHER_MATMUL_UDMA:
+        case ASCEND950_MATMUL_REDUCE_SCATTER_UDMA:
             return CostModelHardwareType::A5;
         default:
             return CostModelHardwareType::A2;
@@ -126,6 +127,7 @@ CostModelResult SelectCostModelTiling(
         case MATMUL_DEQUANT_REDUCE_SCATTER_WRITE:
         case ASCEND950_MXFP8_MATMUL_REDUCE_SCATTER:
         case ASCEND950_FP4_MX_MATMUL_REDUCE_SCATTER:
+        case ASCEND950_MATMUL_REDUCE_SCATTER_UDMA:
             return SelectReduceScatterTiling(info, rankSize, resolvedConfig);
         case MATMUL_ALLREDUCE:
             return SelectAllReduceTiling(info, rankSize, resolvedConfig);

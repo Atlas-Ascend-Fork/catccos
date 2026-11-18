@@ -23,6 +23,7 @@
 #include "ascend950_matmul_reduce_scatter/ascend950_matmul_reduce_scatter_device.h"
 #include "ascend950_mxfp8_alltoall_matmul_split_k_urma/ascend950_mxfp8_alltoall_matmul_split_k_urma_device.h"
 #include "ascend950_mxfp8_matmul_alltoall/ascend950_mxfp8_matmul_alltoall_device.h"
+#include "ascend950_matmul_reduce_scatter_udma/ascend950_matmul_reduce_scatter_udma_device.h"
 
 using namespace AscendC;
 
@@ -765,5 +766,58 @@ void LaunchAscend950MxFp8AllToAllMatmulSplitKUrmaFP16(
             LaunchAscend950MxFp8AllToAllMatmulSplitKUrmaWithConfig<7>(
                 stream, blockNum, fftsAddr, kernelParams, symmetricPtr, cocTiling);
             break;
+    }
+}
+
+template <template <class, class, class, class, class, class> class ConfigAlias>
+static void LaunchAscend950MatmulReduceScatterUdmaWithConfig(
+    void* stream, uint32_t blockNum, uint64_t fftsAddr, KernelParams& kernelParams, uint8_t* symmetricPtr,
+    CocTilingParams& cocTiling, uint32_t transA, uint32_t transB)
+{
+    auto launch = [&](auto&& deviceOp) {
+        using DeviceOp = std::decay_t<decltype(deviceOp)>;
+        Catlass::GemmCoord problemShape{cocTiling.m, cocTiling.n, cocTiling.k};
+        Catlass::MatrixCoord commCoreSplit{cocTiling.commDataSplit, cocTiling.commNpuSplit};
+        Catlass::MatrixCoord commBlockShape{cocTiling.commBlockM, cocTiling.n0};
+        Catlass::MatrixCoord commTileShape{cocTiling.commTileM / 2, cocTiling.n0};
+        typename DeviceOp::Arguments args{
+            problemShape,
+            static_cast<uint32_t>(shmem_my_pe()),
+            static_cast<uint32_t>(shmem_n_pes()),
+            cocTiling.commInterval,
+            kernelParams.ptrA,
+            kernelParams.ptrB,
+            kernelParams.ptrC,
+            symmetricPtr,
+            commCoreSplit,
+            commBlockShape,
+            commTileShape,
+            kernelParams.customPtrs[0]};
+        DeviceOp op;
+        op.Initialize(args);
+        op.Run((aclrtStream)stream, blockNum, fftsAddr);
+    };
+    if (!transA && !transB) {
+        launch(typename ConfigAlias<ElementA, LayoutA0, ElementB, LayoutB0, ElementD, LayoutD>::Device{});
+    } else if (!transA && transB) {
+        launch(typename ConfigAlias<ElementA, LayoutA0, ElementB, LayoutB1, ElementD, LayoutD>::Device{});
+    } else if (transA && !transB) {
+        launch(typename ConfigAlias<ElementA, LayoutA1, ElementB, LayoutB0, ElementD, LayoutD>::Device{});
+    } else {
+        launch(typename ConfigAlias<ElementA, LayoutA1, ElementB, LayoutB1, ElementD, LayoutD>::Device{});
+    }
+}
+
+void LaunchAscend950MatmulReduceScatterUdmaFP16(
+    void* stream, uint32_t blockNum, uint64_t fftsAddr, KernelParams& kernelParams, uint8_t* workSpace,
+    uint8_t* symmetricPtr, CocTilingParams& cocTiling, uint32_t transA, uint32_t transB)
+{
+    (void)workSpace;
+    if (cocTiling.m0 == 128) {
+        LaunchAscend950MatmulReduceScatterUdmaWithConfig<Ascend950MatmulReduceScatterUdmaConfig_M0_128>(
+            stream, blockNum, fftsAddr, kernelParams, symmetricPtr, cocTiling, transA, transB);
+    } else {
+        LaunchAscend950MatmulReduceScatterUdmaWithConfig<Ascend950MatmulReduceScatterUdmaConfig_M0_256>(
+            stream, blockNum, fftsAddr, kernelParams, symmetricPtr, cocTiling, transA, transB);
     }
 }

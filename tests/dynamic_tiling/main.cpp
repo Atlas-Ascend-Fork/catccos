@@ -201,7 +201,7 @@ int main(int argc, char** argv)
         attributes.option_attr.data_op_engine_type = ACLSHMEM_DATA_OP_ROCE;
     } else if (
         commType == ASCEND950_ALLGATHER_MATMUL_UDMA || commType == ASCEND950_MXFP8_MATMUL_ALLTOALL ||
-        commType == ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA) {
+        commType == ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA || commType == ASCEND950_MATMUL_REDUCE_SCATTER_UDMA) {
         attributes.option_attr.data_op_engine_type = ACLSHMEM_DATA_OP_UDMA;
     }
     status = aclshmemx_init_attr(ACLSHMEMX_INIT_WITH_DEFAULT, &attributes);
@@ -255,12 +255,7 @@ int main(int argc, char** argv)
 
         CocCommType actualKernelType = op->GetActualKernelType(cocTiling);
 
-        KernelParams kernelParams;
-
-        op->AllocateDeviceSpace(kernelParams, cocTiling, rankId, dataFile);
-
-        void* symmPtr = aclshmem_calloc(1, SHMEM_BUFF_BYTES);
-        uint8_t* gmSymmetric = (uint8_t*)symmPtr;
+        const CocTilingParams initialTiling = cocTiling;
 
         uint32_t searchparams =
             (std::getenv("SEARCH_PARAMS") == nullptr) ? 1U : std::stoul(std::getenv("SEARCH_PARAMS"));
@@ -307,6 +302,30 @@ int main(int argc, char** argv)
             }
         }
 
+        if (cocTilings.empty()) {
+            std::cerr << "No valid tiling for " << opName << std::endl;
+            continue;
+        }
+
+        CocTilingParams allocationTiling = initialTiling;
+        if (actualKernelType == ASCEND950_MATMUL_REDUCE_SCATTER_UDMA) {
+            // Scratch grows with commInterval * m0 * n0; core count and stage count
+            // are fixed across this search. Cover every warmup and timed candidate.
+            auto scratchElementsPerCore = [](const CocTilingParams& tiling) {
+                return static_cast<uint64_t>(tiling.commInterval) * tiling.m0 * tiling.n0;
+            };
+            allocationTiling = cocTilings.front();
+            for (const auto& tiling : cocTilings) {
+                if (scratchElementsPerCore(tiling) > scratchElementsPerCore(allocationTiling)) {
+                    allocationTiling = tiling;
+                }
+            }
+        }
+
+        KernelParams kernelParams;
+
+        op->AllocateDeviceSpace(kernelParams, allocationTiling, rankId, dataFile);
+
         size_t workSpaceSize = 0;
         for (const auto& tiling : cocTilings) {
             workSpaceSize = std::max(workSpaceSize, op->GetWorkspaceSize(tiling));
@@ -315,6 +334,9 @@ int main(int argc, char** argv)
         if (workSpaceSize > 0) {
             ACL_CHECK(aclrtMalloc((void**)(&workspaceDevice), workSpaceSize, ACL_MEM_MALLOC_HUGE_FIRST));
         }
+
+        void* symmPtr = aclshmem_calloc(1, SHMEM_BUFF_BYTES);
+        uint8_t* gmSymmetric = (uint8_t*)symmPtr;
 
         ACL_CHECK(aclrtSynchronizeStream(stream));
 

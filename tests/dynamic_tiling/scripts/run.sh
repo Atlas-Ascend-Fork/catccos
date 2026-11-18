@@ -108,7 +108,7 @@ if [ "$TEST_TYPE" = "0" ]; then
 
         rm -rf output/*.bin
         case "$KERNEL_NAME" in
-            "mmar"|"agmm"|"a5agmm"|"mmrs"|"a5mmrs"|"agmmwg"|"agmmrdma"|"agmmrr")
+            "mmar"|"agmm"|"a5agmm"|"mmrs"|"a5mmrs"|"agmmwg"|"agmmrdma"|"agmmrr"|"a5mmrsudma")
                 python3 ${UTILS_PATH}/gen_data.py ${KERNEL_NAME} ${DATA_TYPE} ${RANK_SIZE} ${M} ${N} ${K} ${TA} ${TB} ${DATA_PATH}
                 ;;
             "gmmata"|"a5gmmata")

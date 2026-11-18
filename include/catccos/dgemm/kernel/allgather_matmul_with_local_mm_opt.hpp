@@ -231,7 +231,7 @@ public:
             MatrixCoord rankOffsetC =
                 params.problemShape.GetCoordMN() * Catlass::MakeCoord<uint32_t>(params.rankIdx, 0);
             MatrixCoord blockOffsetC = rankOffsetC + blockOffset.GetCoordMN();
-            ;
+
             int64_t offsetA = params.layoutA.GetOffset(blockOffsetA);
             int64_t offsetB = params.layoutWB.GetOffset(blockOffsetB);
             int64_t offsetC = params.layoutC.GetOffset(blockOffsetC);
