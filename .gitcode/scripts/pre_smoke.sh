@@ -8,8 +8,8 @@ set -uo pipefail
 script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workspace="${1:-${script_root}}"
 if [[ ! -d "${workspace}/python/tla_dist_dsl" ]]; then
-  echo "TLA DSL directory not found: ${workspace}/python/tla_dist_dsl; skip pre-smoke tests."
-  exit 0
+  echo "ERROR: TLA DSL directory not found: ${workspace}/python/tla_dist_dsl" >&2
+  exit 1
 fi
 workspace="$(cd "${workspace}" && pwd)"
 dsl_root="${workspace}/python/tla_dist_dsl"
