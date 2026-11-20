@@ -14,6 +14,9 @@ PROJECT_ROOT=$(cd "${SCRIPT_DIR}/../../.." && pwd)
 usage() {
     cat <<'EOF'
 Usage: bash scripts/run.sh [device_id_list]
+  DTYPE=mxfp8       mxfp8 or bf16; both use the same executable.
+  BF16 defaults: M=3667 N=3328 K=12288 ITERATIONS=1 SEED=1.
+  OVERLAP=1 measures both formats with 5 warmups and 20 samples by default.
   Default topology: two nodes, 16 devices per node, physical devices 0..15.
   LOCAL_RANKS=16      Devices per node: 1, 2, 4, 8, or 16; equal on both nodes.
                      Must match GROUP_SIZE selected when building.
@@ -25,9 +28,10 @@ Usage: bash scripts/run.sh [device_id_list]
   NODE_RANK=0         This host's index: 0 or 1.
   IPPORT=tcp://<rank0-host>:12560  Both hosts use the same rank-0 endpoint.
   M=10000           Output rows per rank, in [1,300000]; input A has WORLD_SIZE*M rows.
-  K=<columns>       Full K after AllToAll; default WORLD_SIZE*256, K/WORLD_SIZE must be a multiple of 64.
+  K=<columns>       Full K after AllToAll; MXFP8 default WORLD_SIZE*256, local K is a multiple of 64.
+                     BF16 requires K to be divisible by WORLD_SIZE.
   N=4096            Output columns, positive multiple of 16.
-  CSV_FILE=<path>   Optional M,K,N case list (output M, full K).
+  CSV_FILE=<path>   Optional DTYPE,M,K,N case list, filtered by DTYPE. Legacy M,K,N also works.
   ITERATIONS=20     Includes the first launch (iter=0) and repeated launches.
   WINDOW_ROWS=512   Communication window rows: 256, 512, or 1024; MatMul tile M remains 256.
   DATA_PATH=<dir>   Input/output files; omitted: generate periodic inputs under LOG_DIR/data.
@@ -46,6 +50,17 @@ if [ "${1:-}" = -h ] || [ "${1:-}" = --help ]; then usage; exit 0; fi
 if [ "$#" -gt 1 ]; then usage; exit 1; fi
 [ -z "${CHUNK_M+x}" ] || fail "CHUNK_M is no longer supported; use M for output rows per rank"
 PYTHON_BIN=${PYTHON_BIN:-python3}
+DTYPE=${DTYPE:-mxfp8}
+OVERLAP=${OVERLAP:-0}
+SEED=${SEED:-1}
+WARMUP=${WARMUP:-5}
+case "$DTYPE" in
+    mxfp8) K_PER_RANK_MULTIPLE=64 ;;
+    bf16) K_PER_RANK_MULTIPLE=1 ;;
+    *) fail "DTYPE must be mxfp8 or bf16" ;;
+esac
+[[ $OVERLAP == 0 || $OVERLAP == 1 ]] || fail 'OVERLAP must be 0 or 1'
+export DTYPE OVERLAP
 if [ "$#" -eq 1 ]; then
     [ -z "${START_DEVICE:-}" ] || fail "use either device_id_list or START_DEVICE"
     DEVICE_LIST=$1
@@ -86,27 +101,37 @@ done
 
 # M always means output rows per rank, including CSV cases.
 if [ -z "${M:-}" ] && [ -n "${CSV_FILE:-}" ]; then
-    CSV_FILE=${CSV_FILE:-"${SCRIPT_DIR}/test_shapes.csv"}
-    CASES=$("$PYTHON_BIN" - "$CSV_FILE" "$RANK_SIZE" <<'PY'
+    CASES=$("$PYTHON_BIN" - "$CSV_FILE" "$DTYPE" "$RANK_SIZE" "$K_PER_RANK_MULTIPLE" <<'PY'
 import csv
 import sys
-world = int(sys.argv[2])
-with open(sys.argv[1], encoding='utf-8-sig', newline='') as source:
+sys.stdout.reconfigure(newline='\n')
+path, dtype, world, k_per_rank_multiple = sys.argv[1:]
+k_multiple = int(world) * int(k_per_rank_multiple)
+fields = ['M', 'K', 'N']
+with open(path, encoding='utf-8-sig', newline='') as source:
     reader = csv.DictReader(source)
-    if reader.fieldnames != ['M', 'K', 'N']:
-        raise SystemExit('CSV header must be M,K,N')
-    rows = list(reader)
-    if not rows:
-        raise SystemExit('CSV must contain at least one shape')
-    for row in rows:
-        if any(not row.get(key, '').isdigit() for key in ('M', 'K', 'N')) or None in row:
+    has_dtype = reader.fieldnames == ['DTYPE', *fields]
+    if not has_dtype and reader.fieldnames != fields:
+        raise SystemExit('CSV header must be DTYPE,M,K,N or M,K,N')
+    matched = False
+    for row in reader:
+        values = [row.get(key) or '' for key in fields]
+        if None in row or any(not value.isascii() or not value.isdecimal() for value in values):
             raise SystemExit('CSV requires three unsigned integers per row')
-        m, k, n = (int(row[key]) for key in ('M', 'K', 'N'))
-        if not 0 < m <= 300000 or not 0 < k <= 0xffffffff or k % (world * 64) or not 0 < n <= 0xffffffff or n % 16:
-            raise SystemExit('CSV requires M in [1,300000], K%(world*64)=0, N%16=0')
+        if has_dtype:
+            if row['DTYPE'] not in ('mxfp8', 'bf16'):
+                raise SystemExit('CSV DTYPE must be mxfp8 or bf16')
+            if row['DTYPE'] != dtype:
+                continue
+        m, k, n = map(int, values)
+        if not 0 < m <= 300000 or not 0 < k <= 0xffffffff or k % k_multiple or not 0 < n <= 0xffffffff or n % 16:
+            raise SystemExit(f'CSV requires M in [1,300000], K%{k_multiple}=0, N%16=0')
         print(m, k, n)
+        matched = True
+    if not matched:
+        raise SystemExit(f'CSV contains no shapes for DTYPE={dtype}')
 PY
-    ) || fail "invalid test_shapes.csv"
+    ) || fail "invalid shape CSV: $CSV_FILE"
     CASE_LOG_ROOT=${LOG_DIR:-"${SCRIPT_DIR}/../out/csv-$(date +%Y%m%d-%H%M%S)-node${NODE_RANK}-$$"}
     while read -r case_m case_k case_n; do
         START_DEVICE= WORLD_SIZE="$RANK_SIZE" NODE_COUNT="$NODE_COUNT" M="$case_m" K="$case_k" N="$case_n" \
@@ -115,15 +140,26 @@ PY
     exit 0
 fi
 
-M=${M:-10000}
-K=${K:-$((RANK_SIZE * 256))}
-N=${N:-4096}
-[[ "$K" =~ ^[1-9][0-9]{0,9}$ ]] && (( K <= 4294967295 && K % (RANK_SIZE * 64) == 0 )) ||
-    fail "K must be a positive uint32 multiple of WORLD_SIZE*64"
+DEFAULT_ITERATIONS=20
+if [[ $DTYPE == bf16 ]]; then
+    M=${M:-3667}
+    K=${K:-12288}
+    N=${N:-3328}
+    DEFAULT_ITERATIONS=1
+    [[ $SEED =~ ^[0-9]+$ ]] || fail "SEED must be an unsigned integer"
+else
+    M=${M:-10000}
+    K=${K:-$((RANK_SIZE * 256))}
+    N=${N:-4096}
+fi
+if [[ $OVERLAP == 1 ]]; then DEFAULT_ITERATIONS=25; fi
+K_MULTIPLE=$((RANK_SIZE * K_PER_RANK_MULTIPLE))
+[[ "$K" =~ ^[1-9][0-9]{0,9}$ ]] && (( K <= 4294967295 && K % K_MULTIPLE == 0 )) ||
+    fail "K must be a positive uint32 multiple of $K_MULTIPLE"
 [[ "$N" =~ ^[1-9][0-9]{0,9}$ ]] && (( N <= 4294967295 && N % 16 == 0 )) ||
     fail "N must be a positive uint32 multiple of 16"
 LOCAL_K=$((K / RANK_SIZE))
-ITERATIONS=${ITERATIONS:-20}
+ITERATIONS=${ITERATIONS:-$DEFAULT_ITERATIONS}
 RUN_TIMEOUT=${RUN_TIMEOUT:-300}
 CHECK_RESULT=${CHECK_RESULT:-1}
 SHMEM_HEAP_MB=${SHMEM_HEAP_MB:-0}
@@ -133,6 +169,10 @@ SHMEM_HEAP_MB=${SHMEM_HEAP_MB:-0}
 [[ "$ITERATIONS" =~ ^[1-9][0-9]{0,3}$ ]] && (( ITERATIONS <= 1000 )) || fail "ITERATIONS must be in [1,1000]"
 [[ "$RUN_TIMEOUT" =~ ^[1-9][0-9]{0,4}$ ]] || fail "RUN_TIMEOUT must be positive seconds"
 [[ "$CHECK_RESULT" = 0 || "$CHECK_RESULT" = 1 ]] || fail "CHECK_RESULT must be 0 or 1"
+if [[ $OVERLAP == 1 ]]; then
+    [[ $WARMUP =~ ^[1-9][0-9]{0,3}$ ]] && (( ITERATIONS >= WARMUP + 2 )) ||
+        fail "OVERLAP requires at least one warmup and two measured iterations"
+fi
 DATA_PATH=${DATA_PATH:-}
 IPPORT=${IPPORT:-tcp://127.0.0.1:12560}
 [[ "$IPPORT" =~ ^tcp://([A-Za-z0-9.-]+):([0-9]{1,5})$ ]] || fail "IPPORT must be tcp://<rank0-host>:<port>"
@@ -158,18 +198,36 @@ set -u
 EXEC_BIN="${PROJECT_ROOT}/build/bin/a2a_matmul"
 [ -x "$EXEC_BIN" ] || fail "executable not found; run scripts/build.sh first"
 [ -f "${SHMEM_HOME_PATH}/version.info" ] || fail "SHMEM version.info not found"
-[ -f "${PROJECT_ROOT}/build/bin/mxfp8_alltoall_shmem_version.info" ] || fail "build snapshot not found; run scripts/build.sh"
-cmp -s "${SHMEM_HOME_PATH}/version.info" "${PROJECT_ROOT}/build/bin/mxfp8_alltoall_shmem_version.info" ||
+[ -f "${PROJECT_ROOT}/build/bin/alltoall_matmul_fused_shmem_version.info" ] || fail "build snapshot not found; run scripts/build.sh"
+cmp -s "${SHMEM_HOME_PATH}/version.info" "${PROJECT_ROOT}/build/bin/alltoall_matmul_fused_shmem_version.info" ||
     fail "SHMEM SDK differs from the one used to compile the kernel; rebuild"
 command -v npu-smi >/dev/null || fail "npu-smi is required"
 command -v timeout >/dev/null || fail "timeout is required"
 command -v "$PYTHON_BIN" >/dev/null || fail "Python 3.10+ is required for validation and timing summaries"
+if [[ $DTYPE == bf16 && $NODE_RANK == 0 && $NODE_COUNT == 2 ]]; then
+    command -v ss >/dev/null || fail "ss is required to detect when BF16 bootstrap is ready"
+fi
+if [[ $OVERLAP == 1 ]]; then
+    if [[ $DTYPE == bf16 ]]; then
+        "$PYTHON_BIN" -c 'import torch; import torch_npu' || fail "BF16 overlap requires torch and torch_npu"
+    else
+        "$PYTHON_BIN" -c 'import torch.distributed as dist; raise SystemExit(not dist.is_gloo_available())' ||
+            fail "MXFP8 overlap reporting requires PyTorch with Gloo"
+    fi
+fi
 LOG_DIR=${LOG_DIR:-"${SCRIPT_DIR}/../out/m${M}-node${NODE_RANK}-$(date +%Y%m%d-%H%M%S)-$$"}
 mkdir -p "$LOG_DIR"
 LOG_DIR=$(cd "$LOG_DIR" && pwd)
 export TRACE_DIR=${TRACE_DIR:-"$LOG_DIR/trace"}
 DATA_SCRIPT="$SCRIPT_DIR/gen_data.py"
-DATA_ARGS=(--world "$RANK_SIZE" --m "$M" --k "$K" --n "$N")
+RANK_START=$((NODE_RANK * LOCAL_RANKS))
+DATA_ARGS=(--world "$RANK_SIZE" --m "$M" --k "$K" --n "$N" --dtype "$DTYPE")
+RANK_ARGS=(--rank-start "$RANK_START" --rank-count "$LOCAL_RANKS")
+if [[ $DTYPE == bf16 ]]; then
+    DATA_ARGS+=(--seed "$SEED" "${RANK_ARGS[@]}")
+    export OPENBLAS_NUM_THREADS=${OPENBLAS_NUM_THREADS:-8}
+    export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
+fi
 if [ -z "$DATA_PATH" ]; then
     DATA_PATH="$LOG_DIR/data"
     "$PYTHON_BIN" "$DATA_SCRIPT" generate "$DATA_PATH" "${DATA_ARGS[@]}" \
@@ -189,6 +247,7 @@ fi
 
 {
     date -Ins
+    printf 'dtype=%s\n' "$DTYPE"
     printf 'world=%s\nnode_rank=%s\nlocal_ranks=%s\ndevices=%s\nM=%s\ninput_rows=%s\niterations=%s\ndata_path=%s\n' \
         "$RANK_SIZE" "$NODE_RANK" "$LOCAL_RANKS" "$DEVICE_LIST" "$M" "$((RANK_SIZE * M))" "$ITERATIONS" "$DATA_PATH"
     printf 'K=%s\nlocalK=%s\nN=%s\n' "$K" "$LOCAL_K" "$N"
@@ -223,6 +282,15 @@ for ((local = 0; local < LOCAL_RANKS; ++local)); do
         "$EXEC_BIN" "$RANK_SIZE" "$rank" "$IPPORT" "$M" "$N" "$K" "$DATA_PATH" "$DEVICE_LIST" \
         > "$LOG_DIR/rank${rank}.log" 2>&1 &
     PIDS+=("$!")
+    if [[ $DTYPE == bf16 && $NODE_COUNT == 2 && $rank == 0 ]]; then
+        for ((attempt = 0; attempt < 1200; ++attempt)); do
+            [[ -n $(ss -H -ltn "sport = :$PORT") ]] && break
+            kill -0 "${PIDS[0]}" 2>/dev/null || fail "rank 0 exited during bootstrap"
+            sleep 0.1
+        done
+        (( attempt < 1200 )) || fail "rank 0 bootstrap listener timeout"
+        echo "[BOOTSTRAP_READY] Start the other node now."
+    fi
 done
 STATUS=0
 for ((local = 0; local < LOCAL_RANKS; ++local)); do
@@ -235,10 +303,36 @@ for ((local = 0; local < LOCAL_RANKS; ++local)); do
 done
 npu-smi info > "$LOG_DIR/postflight.txt" 2>&1 || true
 if [ "$STATUS" -ne 0 ]; then fail "one or more ranks failed; see $LOG_DIR/rank*.log"; fi
-if [ "$CHECK_RESULT" -eq 1 ]; then
-    "$PYTHON_BIN" "$SCRIPT_DIR/gen_data.py" check "$DATA_PATH" "${DATA_ARGS[@]}" \
-        --rank-start "$((NODE_RANK * LOCAL_RANKS))" --rank-count "$LOCAL_RANKS" \
+if [[ $CHECK_RESULT == 1 || $OVERLAP == 1 ]]; then
+    if [[ $DTYPE == mxfp8 ]]; then DATA_ARGS+=("${RANK_ARGS[@]}"); fi
+    "$PYTHON_BIN" "$DATA_SCRIPT" check "$DATA_PATH" "${DATA_ARGS[@]}" \
         > "$LOG_DIR/correctness.log" 2>&1 || fail "CPU reference check failed; see $LOG_DIR/correctness.log"
+fi
+if [[ $DTYPE == bf16 || $OVERLAP == 1 ]]; then
+    grep -h "^TIMING " "$LOG_DIR"/rank*.log | tee "$LOG_DIR/timings.txt"
+fi
+if [[ $OVERLAP == 1 ]]; then
+    if [[ $DTYPE == bf16 ]]; then
+        # CPU checking can take time; recheck the selected devices before starting HCCL.
+        npu-smi info > "$LOG_DIR/overlap_preflight.txt" 2>&1 || fail "NPU query failed before HCCL baseline"
+        for device in "${DEVICE_IDS[@]}"; do
+            grep -Eq "No running processes found in NPU ${device}([[:space:]]|\\|)" "$LOG_DIR/overlap_preflight.txt" ||
+                fail "NPU $device is occupied before HCCL baseline; results remain in $LOG_DIR"
+        done
+    fi
+    MASTER_ADDR=${IPPORT#tcp://}
+    MASTER_ADDR=${MASTER_ADDR%:*}
+    timeout --signal=TERM --kill-after=10s "${OVERLAP_TIMEOUT:-600}s" \
+        "$PYTHON_BIN" -m torch.distributed.run --nnodes="$NODE_COUNT" --nproc-per-node="$LOCAL_RANKS" \
+        --node-rank="$NODE_RANK" --master-addr="$MASTER_ADDR" --master-port="$PORT" \
+        "$SCRIPT_DIR/trace.py" overlap --dtype "$DTYPE" --data-path "$DATA_PATH" --own-logs "$LOG_DIR" \
+        --shape "$M,$N,$K" --devices "$DEVICE_LIST" --warmup "$WARMUP" \
+        --iterations="$((ITERATIONS - WARMUP))" --output "$LOG_DIR/overlap.json" \
+        2>&1 | tee "$LOG_DIR/overlap.log"
+fi
+if [[ $DTYPE == bf16 || $OVERLAP == 1 ]]; then
+    echo "[PASS] Logs: $LOG_DIR"
+    exit 0
 fi
 # Summarize this host's existing TIMING records without another device run.
 "$PYTHON_BIN" - "$LOG_DIR" "$((NODE_RANK * LOCAL_RANKS))" "$LOCAL_RANKS" "$ITERATIONS" <<'PY' | tee "$LOG_DIR/summary.txt"

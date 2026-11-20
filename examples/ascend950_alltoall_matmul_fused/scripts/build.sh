@@ -48,4 +48,4 @@ cmake -B "${PROJECT_ROOT}/build" -S "${PROJECT_ROOT}" -DCATCCOS_BUILD_TESTS=OFF 
 # Device libraries are generated from main.cpp and do not track header-only changes.
 rm -f "${PROJECT_ROOT}/build/bin/liba2a_matmul_impl.so"
 cmake --build "${PROJECT_ROOT}/build" --target a2a_matmul -j "${BUILD_JOBS:-2}"
-cp "${SHMEM_HOME_PATH}/version.info" "${PROJECT_ROOT}/build/bin/mxfp8_alltoall_shmem_version.info"
+cp "${SHMEM_HOME_PATH}/version.info" "${PROJECT_ROOT}/build/bin/alltoall_matmul_fused_shmem_version.info"

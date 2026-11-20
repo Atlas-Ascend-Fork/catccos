@@ -7,15 +7,17 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
-#include "ascend950_mxfp8_alltoall_matmul_device.h"
-#include "ascend950_mxfp8_alltoall_matmul_host.h"
+#include "ascend950_alltoall_matmul_fused_device.h"
+#include "ascend950_alltoall_matmul_fused_host.h"
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <type_traits>
 #ifdef ENABLE_TIMER
 #include <filesystem>
 #include "AscendTimer_host.hpp"
@@ -147,29 +149,76 @@ void WorldBarrier(
     Check(aclrtSynchronizeStream(resources.stream), operation);
 }
 
+void CheckOutputFile(
+    const std::string& path, const uint8_t* output, size_t bytes, const std::vector<uint32_t>& rows, size_t rowBytes)
+{
+    std::ifstream expected(path, std::ios::binary);
+    std::vector<uint8_t> reference(std::min(bytes, size_t{1024 * 1024}));
+    std::vector<uint8_t> actual(reference.size());
+    auto compare = [&](const uint8_t* src, size_t span) {
+        for (size_t offset = 0; offset < span; offset += reference.size()) {
+            const size_t count = std::min(reference.size(), span - offset);
+            if (!expected.read(reinterpret_cast<char*>(reference.data()), count)) {
+                throw std::runtime_error("missing or truncated fused reference output");
+            }
+            Check(aclrtMemcpy(actual.data(), count, src + offset, count, ACL_MEMCPY_DEVICE_TO_HOST), "check C");
+            if (std::memcmp(reference.data(), actual.data(), count) != 0) {
+                throw std::runtime_error("standalone/serial output differs from fused output");
+            }
+        }
+    };
+    if (rows.empty()) {
+        compare(output, bytes);
+    } else {
+        for (const auto row : rows) {
+            compare(output + static_cast<size_t>(row) * rowBytes, rowBytes);
+        }
+    }
+}
+
 template <uint32_t TileK>
+using MxFp8Config = Ascend950MxFp8AllToAllMatmulConfig<
+    ElementA, LayoutA, ElementB, LayoutB, ElementMxScaleA, LayoutMxScaleA, ElementMxScaleB, LayoutMxScaleB, ElementC,
+    LayoutC, TileK>;
+using Bf16Config = Ascend950Bf16AllToAllMatmulConfig<bfloat16_t, LayoutA, bfloat16_t, LayoutB, ElementC, LayoutC>;
+
+enum class RunMode : uint32_t { Fused, Communication, Matmul, Serial };
+
+template <class Config>
 void RunKernel(
     const CocTilingParams& cocTiling, uint32_t rankId, uint32_t groupSize, const KernelParams& params,
-    uint8_t* gmSymmetric, RuntimeResources& resources, uint32_t blockNum, uint32_t iterations)
+    uint8_t* gmSymmetric, RuntimeResources& resources, uint32_t blockNum, uint32_t iterations,
+    const std::string& dataPath, bool benchmark, CatccosOperator& op)
 {
-    using Config = Ascend950MxFp8AllToAllMatmulConfig<
-        ElementA, LayoutA, ElementB, LayoutB, ElementMxScaleA, LayoutMxScaleA, ElementMxScaleB, LayoutMxScaleB,
-        ElementC, LayoutC, TileK>;
+    constexpr bool isBf16 = std::is_same_v<Config, Bf16Config>;
     using DeviceOp = typename Config::Device;
+    const std::array<const char*, 4> modeNames{"fused", "comm", "matmul", "serial"};
+    const uint32_t modeCount = benchmark ? modeNames.size() : 1;
     aclrtStream stream = resources.stream;
-    const auto layout = GetLayout(cocTiling);
-    Catlass::GemmCoord problemShape{cocTiling.m, cocTiling.n, cocTiling.k};
-    typename DeviceOp::Arguments args{
-        problemShape,
-        rankId,
-        cocTiling.rankSize,
-        cocTiling.commTileM,
-        gmSymmetric + layout.sourceA,
-        params.ptrB,
-        gmSymmetric + layout.sourceScaleA,
-        params.customPtrs[1],
-        params.ptrC,
-        gmSymmetric};
+    const auto layout = GetLayout<!isBf16>(cocTiling);
+    const std::string directory = dataPath.empty() ? "." : dataPath;
+    const auto sampleRows =
+        !isBf16 && benchmark ? ReadSampleRows(directory + "/sample_rows.bin", layout.chunkM) : std::vector<uint32_t>{};
+    const size_t rowBytes = static_cast<size_t>(layout.n) * sizeof(bfloat16_t);
+    const Catlass::GemmCoord problemShape{cocTiling.m, cocTiling.n, cocTiling.k};
+    const typename DeviceOp::Arguments args = [&]() -> typename DeviceOp::Arguments {
+        if constexpr (isBf16) {
+            return {problemShape, rankId,      cocTiling.rankSize, cocTiling.commTileM, gmSymmetric + layout.sourceA,
+                    params.ptrB,  params.ptrC, gmSymmetric};
+        } else {
+            return {
+                problemShape,
+                rankId,
+                cocTiling.rankSize,
+                cocTiling.commTileM,
+                gmSymmetric + layout.sourceA,
+                params.ptrB,
+                gmSymmetric + layout.sourceScaleA,
+                params.customPtrs[1],
+                params.ptrC,
+                gmSymmetric};
+        }
+    }();
     DeviceOp deviceOp;
     deviceOp.Initialize(args);
     const auto fftsAddr = shmemx_get_ffts_config();
@@ -178,10 +227,15 @@ void RunKernel(
     struct Timing {
         uint64_t begin;
         uint64_t done;
+        uint32_t iteration;
+        RunMode mode;
     };
     std::vector<Timing> timings;
-    timings.reserve(iterations);
+    timings.reserve(iterations * modeCount);
 #ifdef ENABLE_TIMER
+    if (benchmark) {
+        throw std::invalid_argument("OVERLAP requires ENABLE_TIMER=OFF");
+    }
     AscendTimerHost::ConfigureCoreNum(static_cast<int>(blockNum));
     const size_t timerBytes = AscendTimerHost::GetTotalTimerBufferSize() * sizeof(int64_t);
     Check(
@@ -196,78 +250,127 @@ void RunKernel(
     const std::string traceDir = traceEnv == nullptr ? "output_timer" : traceEnv;
     std::filesystem::create_directories(traceDir);
 #endif
-    for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
-        uint8_t* iterationTimer = nullptr;
+    auto runIteration = [&](uint32_t iteration, bool validate) {
+        const bool saveFusedOutput = validate || (!benchmark && isBf16 && iteration == 0 && iterations > 1);
+        for (uint32_t offset = 0; offset < modeCount; ++offset) {
+            const auto mode = static_cast<RunMode>((iteration + offset) % modeCount);
+            const bool checkBaseline = validate && (mode == RunMode::Matmul || mode == RunMode::Serial);
+            if (checkBaseline) {
+                // Fill C with BF16 NaNs so a missing store cannot reuse an earlier result.
+                Check(aclrtMemset(params.ptrC, layout.CBytes(), 0xff, layout.CBytes()), "poison baseline C");
+            }
+            uint8_t* iterationTimer = nullptr;
 #ifdef ENABLE_TIMER
-        // Only the selected call records events; warmup calls pass a null timer.
-        if (iteration == traceIteration) {
-            iterationTimer = resources.timerBuffer;
-        }
+            // Only the selected call records events.
+            if (iteration == traceIteration) {
+                iterationTimer = resources.timerBuffer;
+            }
 #endif
-        Timing timing;
-        WorldBarrier(resources, rankId, cocTiling.rankSize, groupSize, "iteration finish barrier");
-        timing.begin = NowNs();
-        ResetSyncBuffer(cocTiling, gmSymmetric, stream);
-        StageInputs(params, cocTiling, gmSymmetric, stream);
-        // This barrier follows input preparation on the same stream.
-        WorldBarrier(resources, rankId, cocTiling.rankSize, groupSize, "iteration start barrier");
-        // DeviceDGemm::Run includes stream synchronization. Use its adapter here
-        // to keep the completion boundary explicit in the operator timing.
-        DGemm::Device::KernelAdapter<typename DeviceOp::Kernel>
-            <<<blockNum, nullptr, stream>>>(deviceOp.params(), fftsAddr, iterationTimer);
-        const auto kernelStatus = aclrtSynchronizeStream(stream);
-        if (kernelStatus != ACL_SUCCESS) {
-            const size_t snapshotBytes = layout.readyBytes;
-            std::vector<uint8_t> snapshot(snapshotBytes);
-            const auto copyStatus = aclrtMemcpy(
-                snapshot.data(), snapshotBytes, gmSymmetric + layout.ready, snapshotBytes, ACL_MEMCPY_DEVICE_TO_HOST);
-            std::cerr << "READY_SNAPSHOT rank=" << rankId << " copy_status=" << copyStatus;
-            if (copyStatus == ACL_SUCCESS) {
-                for (uint32_t source = 0; source < cocTiling.rankSize; ++source) {
-                    uint32_t value = 0;
-                    const size_t offset = layout.ReadyOffset(source) - layout.ready;
-                    std::memcpy(&value, snapshot.data() + offset, sizeof(value));
-                    std::cerr << " source" << source << "=" << value;
+            WorldBarrier(resources, rankId, cocTiling.rankSize, groupSize, "iteration finish barrier");
+            const uint64_t begin = validate ? 0 : NowNs();
+            if (mode != RunMode::Matmul) {
+                if constexpr (isBf16) {
+                    Bf16AllToAllMatmulExample::ResetSyncBuffer(cocTiling, gmSymmetric, stream);
+                    Bf16AllToAllMatmulExample::StageInputs(params, cocTiling, gmSymmetric, stream);
+                } else {
+                    ResetSyncBuffer(cocTiling, gmSymmetric, stream);
+                    StageInputs(params, cocTiling, gmSymmetric, stream);
                 }
-                uint32_t frontier = 0;
-                std::memcpy(&frontier, snapshot.data() + (layout.FrontierOffset() - layout.ready), sizeof(frontier));
-                std::cerr << " frontier=" << frontier;
+                // Wait for every rank to reset ready before any sender publishes a new value.
+                WorldBarrier(resources, rankId, cocTiling.rankSize, groupSize, "iteration start barrier");
             }
-            std::cerr << std::endl;
-        }
-        Check(kernelStatus, "fused kernel");
-        timing.done = NowNs();
-        timings.push_back(timing);
+            auto kernelParams = deviceOp.params();
+            using Mode = typename DeviceOp::Kernel::Mode;
+            constexpr std::array<Mode, 4> modes{Mode::Fused, Mode::Communication, Mode::Matmul, Mode::Communication};
+            kernelParams.mode = modes[static_cast<uint32_t>(mode)];
+            // Launch the adapter directly so stream synchronization stays in the timed region.
+            DGemm::Device::KernelAdapter<typename DeviceOp::Kernel>
+                <<<blockNum, nullptr, stream>>>(kernelParams, fftsAddr, iterationTimer);
+            if (mode == RunMode::Serial) {
+                // Completion of the communication kernel orders the reads in the MatMul kernel.
+                kernelParams.mode = Mode::Matmul;
+                DGemm::Device::KernelAdapter<typename DeviceOp::Kernel>
+                    <<<blockNum, nullptr, stream>>>(kernelParams, fftsAddr, nullptr);
+            }
+            const auto kernelStatus = aclrtSynchronizeStream(stream);
+            if (kernelStatus != ACL_SUCCESS) {
+                const size_t snapshotBytes = isBf16 ? layout.readyValues - layout.ready : layout.readyBytes;
+                const size_t frontierOffset = layout.FrontierOffset();
+                std::vector<uint8_t> snapshot(snapshotBytes);
+                const auto copyStatus = aclrtMemcpy(
+                    snapshot.data(), snapshotBytes, gmSymmetric + layout.ready, snapshotBytes,
+                    ACL_MEMCPY_DEVICE_TO_HOST);
+                std::cerr << "READY_SNAPSHOT rank=" << rankId << " copy_status=" << copyStatus;
+                if (copyStatus == ACL_SUCCESS) {
+                    for (uint32_t source = 0; source < cocTiling.rankSize; ++source) {
+                        uint32_t value = 0;
+                        const size_t offset = layout.ReadyOffset(source) - layout.ready;
+                        std::memcpy(&value, snapshot.data() + offset, sizeof(value));
+                        std::cerr << " source" << source << "=" << value;
+                    }
+                    uint32_t frontier = 0;
+                    std::memcpy(&frontier, snapshot.data() + (frontierOffset - layout.ready), sizeof(frontier));
+                    std::cerr << " frontier=" << frontier;
+                }
+                std::cerr << std::endl;
+            }
+            Check(kernelStatus, isBf16 ? "AllToAll MatMul execution" : "fused kernel");
+            if (!validate) {
+                timings.push_back({begin, NowNs(), iteration, mode});
+            }
+
+            if (mode == RunMode::Fused && saveFusedOutput) {
+                op.WriteResultFile(params, cocTiling, rankId, dataPath);
+            }
+            if (checkBaseline) {
+                const auto prefix = sampleRows.empty() ? "/output_" : "/output_samples_";
+                const auto path = directory + prefix + std::to_string(rankId) + ".bin";
+                CheckOutputFile(path, params.ptrC, layout.CBytes(), sampleRows, rowBytes);
+                const auto bytes = sampleRows.empty() ? layout.CBytes() : sampleRows.size() * rowBytes;
+                std::cout << "BASELINE_CHECK rank=" << rankId << " mode=" << modeNames[static_cast<uint32_t>(mode)]
+                          << " bytes=" << bytes << " status=PASS" << std::endl;
+            }
 #ifdef ENABLE_TIMER
-        std::cout << "TRACE_MODE rank=" << rankId << " iter=" << iteration << " enabled=" << (iterationTimer != nullptr)
-                  << std::endl;
-        if (iteration == traceIteration) {
-            const auto result = AscendTimerHost::GetTimeResult(resources.timerBuffer);
-            const std::string prefix =
-                traceDir + "/rank" + std::to_string(rankId) + "_iter" + std::to_string(iteration);
-            if (!AscendTimerHost::WriteAllTimerResults(prefix + "_raw.csv", prefix + "_duration.csv", result)) {
-                throw std::runtime_error("timer CSV export failed");
+            std::cout << "TRACE_MODE rank=" << rankId << " iter=" << iteration
+                      << " enabled=" << (iterationTimer != nullptr) << std::endl;
+            if (iteration == traceIteration) {
+                const auto result = AscendTimerHost::GetTimeResult(resources.timerBuffer);
+                const std::string prefix =
+                    traceDir + "/rank" + std::to_string(rankId) + "_iter" + std::to_string(iteration);
+                if (!AscendTimerHost::WriteAllTimerResults(prefix + "_raw.csv", prefix + "_duration.csv", result)) {
+                    throw std::runtime_error("timer CSV export failed");
+                }
+                std::cout << "TRACE rank=" << rankId << " iter=" << iteration << " raw=" << prefix << "_raw.csv"
+                          << " cycles_per_us=" << AscendTimerHost::kCycleToTimeBase
+                          << " clock_domain=rank_local max_events=" << AscendTimer::MAX_DYNAMIC_ITER << std::endl;
             }
-            std::cout << "TRACE rank=" << rankId << " iter=" << iteration << " raw=" << prefix << "_raw.csv"
-                      << " cycles_per_us=" << AscendTimerHost::kCycleToTimeBase
-                      << " clock_domain=rank_local max_events=" << AscendTimer::MAX_DYNAMIC_ITER << std::endl;
-        }
 #endif
+        }
+    };
+    if (benchmark) {
+        runIteration(0, true);
+    }
+    for (uint32_t iteration = 0; iteration < iterations; ++iteration) {
+        runIteration(iteration, false);
     }
     WorldBarrier(resources, rankId, cocTiling.rankSize, groupSize, "benchmark finish barrier");
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "SHAPE rank=" << rankId << " world=" << cocTiling.rankSize << " M=" << layout.chunkM
               << " input_rows=" << layout.m << " K=" << layout.fullK << " N=" << cocTiling.n
-              << " localK=" << layout.localK << " tileK=" << TileK << " window_rows=" << layout.windowRows
+              << " localK=" << layout.localK << " tileK=" << cocTiling.k0 << " window_rows=" << layout.windowRows
               << " windows=" << layout.windowCount << " symmetric_bytes=" << layout.symmetricBytes
               << " c_bytes=" << layout.CBytes() << "\n";
-    for (uint32_t i = 0; i < timings.size(); ++i) {
-        const auto& t = timings[i];
-        std::cout << "TIMING rank=" << rankId << " iter=" << i << " M=" << layout.chunkM
-                  << " world=" << cocTiling.rankSize << " group_size=" << groupSize << " K=" << layout.fullK
-                  << " N=" << layout.n << " window_rows=" << layout.windowRows << " timing_scope=gm_input_to_output"
-                  << " begin_ns=" << t.begin << " done_ns=" << t.done << " total_ms=" << (t.done - t.begin) / 1e6
-                  << "\n";
+    for (const auto& timing : timings) {
+        std::cout << "TIMING rank=" << rankId << " iter=" << timing.iteration;
+        if (isBf16 || benchmark) {
+            std::cout << " mode=" << modeNames[static_cast<uint32_t>(timing.mode)];
+        }
+        std::cout << " M=" << layout.chunkM << " world=" << cocTiling.rankSize << " group_size=" << groupSize
+                  << " K=" << layout.fullK << " N=" << layout.n << " window_rows=" << layout.windowRows
+                  << " timing_scope="
+                  << (timing.mode == RunMode::Matmul ? "received_input_to_output" : "gm_input_to_output")
+                  << " begin_ns=" << timing.begin << " done_ns=" << timing.done
+                  << " total_ms=" << (timing.done - timing.begin) / 1e6 << "\n";
     }
     std::cout.flush();
 }
@@ -275,7 +378,10 @@ void RunKernel(
 
 struct Options {
     static constexpr auto HELP_SUFFIX = " rank_size rank_id ip_port M N K [data_path] [device_id_list]\n"
-                                        "  M: output rows per rank; N: output columns; K: full K after AllToAll.\n";
+                                        "  M: output rows per rank; N: output columns; K: full K after AllToAll.\n"
+                                        "  DTYPE=mxfp8 (default) or bf16.\n";
+    bool bf16 = false;
+    bool overlap = false;
     uint32_t rankSize = 0;
     uint32_t rankId = 0;
     uint32_t groupSize = 0;
@@ -296,6 +402,19 @@ struct Options {
             return -1;
         }
         try {
+            if (const char* dtype = std::getenv("DTYPE")) {
+                const std::string format(dtype);
+                if (format != "mxfp8" && format != "bf16") {
+                    throw std::invalid_argument("DTYPE must be mxfp8 or bf16");
+                }
+                bf16 = format == "bf16";
+            }
+            const uint32_t overlapFlag = ReadEnvUint("OVERLAP", 0);
+            if (overlapFlag > 1) {
+                throw std::invalid_argument("OVERLAP must be 0 or 1");
+            }
+            overlap = overlapFlag == 1;
+            iterations = overlap ? 25 : (bf16 ? 1 : 20);
             rankSize = ParseUint(argv[static_cast<int>(ArgsIndex::RANK_SIZE)]);
             rankId = ParseUint(argv[static_cast<int>(ArgsIndex::RANK_ID)]);
             ipPort = argv[static_cast<int>(ArgsIndex::IP_PORT)];
@@ -319,9 +438,12 @@ struct Options {
                 rankId >= rankSize || iterations == 0 || iterations > 1000 || ipPort.compare(0, 6, "tcp://") != 0) {
                 throw std::invalid_argument("use 1/2/4/8/16/32 ranks, a tcp endpoint and ITERATIONS in [1,1000]");
             }
-            if (m == 0 || m > 300000 || n == 0 || n % 16 != 0 || k == 0 || k % (rankSize * 64) != 0) {
-                throw std::invalid_argument("require M in [1,300000], N positive and divisible by 16, "
-                                            "K positive and divisible by rank_size*64");
+            const uint32_t kMultiple = rankSize * (bf16 ? 1 : 64);
+            if (m == 0 || m > 300000 || n == 0 || n % 16 != 0 || k == 0 || k % kMultiple != 0) {
+                throw std::invalid_argument(
+                    "require M in [1,300000], N positive and divisible by 16, "
+                    "K positive and divisible by " +
+                    std::to_string(kMultiple));
             }
             const size_t separator = ipPort.rfind(':');
             if (separator == std::string::npos || separator <= 6) {
@@ -358,10 +480,10 @@ struct Options {
                 (rankSize != groupSize && rankSize != 2 * groupSize)) {
                 throw std::invalid_argument("use one or two nodes with equal local device counts");
             }
-            if (groupSize != CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE) {
+            if (groupSize != AllToAllMatmulCommScheduler::GROUP_SIZE) {
                 throw std::invalid_argument(
                     "local device count must match compiled GROUP_SIZE=" +
-                    std::to_string(CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE) +
+                    std::to_string(AllToAllMatmulCommScheduler::GROUP_SIZE) +
                     "; rebuild with GROUP_SIZE=" + std::to_string(groupSize));
             }
             if (rankSize > groupSize &&
@@ -389,7 +511,7 @@ int main(int argc, char** argv)
     cocTiling.k = options.k / options.rankSize;
     cocTiling.transB = 1;
     cocTiling.m0 = cocTiling.n0 = 256;
-    cocTiling.k0 = AllToAllLayout::SelectTileK(cocTiling.k);
+    cocTiling.k0 = options.bf16 ? 128 : AllToAllLayout::SelectTileK(cocTiling.k);
     cocTiling.commTileM = options.windowRows;
     cocTiling.commInterval = 1;
     cocTiling.commNpuSplit = 1;
@@ -398,7 +520,8 @@ int main(int argc, char** argv)
     cocTiling.rankSize = options.rankSize;
 
     try {
-        auto op = OperatorRegistry::Instance().CreateOperator(OPERATOR_NAME);
+        const auto name = options.bf16 ? Bf16AllToAllMatmulExample::OPERATOR_NAME : OPERATOR_NAME;
+        auto op = OperatorRegistry::Instance().CreateOperator(name);
         if (!op || !op->ValidateCocTilingParams(options.rankSize, cocTiling)) {
             throw std::invalid_argument("unsupported M/N/K layout or tiling configuration");
         }
@@ -477,17 +600,26 @@ int main(int argc, char** argv)
         if (resources.symmetric == nullptr) {
             throw std::runtime_error("aclshmem_malloc failed");
         }
-        InitializeSymmetricBuffer(cocTiling, resources.symmetric);
+        if (options.bf16) {
+            Bf16AllToAllMatmulExample::InitializeSymmetricBuffer(cocTiling, resources.symmetric);
+        } else {
+            InitializeSymmetricBuffer(cocTiling, resources.symmetric);
+        }
         resources.barrierWorkspace = static_cast<uint8_t*>(aclshmem_calloc(1, barrierBytes));
         if (resources.barrierWorkspace == nullptr) {
             throw std::runtime_error("allocate barrier workspace failed");
         }
-        // Select once on the host; all supported shapes share this executable.
-        const auto run =
-            cocTiling.k0 == 256 ? &RunKernel<256> : (cocTiling.k0 == 128 ? &RunKernel<128> : &RunKernel<64>);
+        const auto blockNum = static_cast<uint32_t>(platform->GetCoreNumAic());
+        const auto run = options.bf16 ?
+                             &RunKernel<Bf16Config> :
+                             (cocTiling.k0 == 256 ?
+                                  &RunKernel<MxFp8Config<256>> :
+                                  (cocTiling.k0 == 128 ? &RunKernel<MxFp8Config<128>> : &RunKernel<MxFp8Config<64>>));
         run(cocTiling, options.rankId, options.groupSize, resources.kernelParams, resources.symmetric, resources,
-            static_cast<uint32_t>(platform->GetCoreNumAic()), options.iterations);
-        op->WriteResultFile(resources.kernelParams, cocTiling, options.rankId, options.dataPath);
+            blockNum, options.iterations, options.dataPath, options.overlap, *op);
+        if (!options.overlap && (!options.bf16 || options.iterations == 1)) {
+            op->WriteResultFile(resources.kernelParams, cocTiling, options.rankId, options.dataPath);
+        }
         WorldBarrier(resources, options.rankId, options.rankSize, options.groupSize, "output finish barrier");
         std::cout << "Rank " << options.rankId << " test finished\n";
     } catch (const std::exception& error) {

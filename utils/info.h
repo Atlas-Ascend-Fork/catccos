@@ -87,6 +87,7 @@ enum CocCommType {
     ASCEND950_MXFP8_ALLTOALL_MATMUL,
     ASCEND950_QUANT_MATMUL_ALLTOALL,
     ASCEND950_HIERARCHICAL_ALLTOALL,
+    ASCEND950_BF16_ALLTOALL_MATMUL,
     TYPE_NUM,
     UNKNOWN
 };
@@ -248,6 +249,7 @@ const std::map<std::string, CocCommType> CommTypeMap = {
     {"a5qmma", CocCommType::ASCEND950_QUANT_MATMUL_ALLTOALL},
     {"a5agmmudma", CocCommType::ASCEND950_ALLGATHER_MATMUL_UDMA},
     {"a5mxfp8atamm", CocCommType::ASCEND950_MXFP8_ALLTOALL_MATMUL},
+    {"a5bf16atamm", CocCommType::ASCEND950_BF16_ALLTOALL_MATMUL},
     {"a5mxfp8atammsplitkurma", CocCommType::ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA},
     {"a5mmrsudma", CocCommType::ASCEND950_MATMUL_REDUCE_SCATTER_UDMA},
     {"agmmsf", ALLGATHER_MATMUL_SHALLOW_FUSION},
@@ -303,6 +305,7 @@ const std::map<CocCommType, std::string> CommTypeOpNameMap = {
     {ASCEND950_DISPATCH_FFN_COMBINE, "Ascend950DispatchFFNCombine"},
     {ASCEND950_ALLGATHER_MATMUL_UDMA, "Ascend950AllGatherMatmulUdma"},
     {ASCEND950_MXFP8_ALLTOALL_MATMUL, "Ascend950MxFp8AllToAllMatmul"},
+    {ASCEND950_BF16_ALLTOALL_MATMUL, "Ascend950Bf16AllToAllMatmul"},
     {ASCEND950_MXFP8_ALLTOALL_MATMUL_SPLIT_K_URMA, "Ascend950MxFp8AllToAllMatmulSplitKUrma"},
     {ASCEND950_DISPATCH, "Ascend950Dispatch"},
     {ASCEND950_MATMUL_REDUCE_SCATTER_UDMA, "Ascend950MatmulReduceScatterUdma"},

@@ -7,8 +7,8 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
-#ifndef ASCEND950_MXFP8_ALLTOALL_MATMUL_HOST_H
-#define ASCEND950_MXFP8_ALLTOALL_MATMUL_HOST_H
+#ifndef ASCEND950_ALLTOALL_MATMUL_FUSED_HOST_H
+#define ASCEND950_ALLTOALL_MATMUL_FUSED_HOST_H
 
 #include <algorithm>
 #include <cstdio>
@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul.hpp"
+#include "catccos/dgemm/kernel/ascend950_alltoall_matmul_fused.hpp"
 #include "operator_registry.h"
 #include "shmem.h"
 #include "host/utils/shmem_log.h"
@@ -28,7 +28,7 @@
 namespace MxFp8AllToAllMatmulExample {
 inline constexpr auto OPERATOR_NAME = "Ascend950MxFp8AllToAllMatmul";
 inline constexpr auto EXECUTABLE_NAME = "a2a_matmul";
-namespace AllToAllLayout = Catccos::DGemm::Kernel::MxFp8AllToAllMatmul;
+namespace AllToAllLayout = Catccos::DGemm::Kernel::AllToAllMatmul;
 
 inline void Check(int status, const char* operation)
 {
@@ -67,10 +67,11 @@ inline void ConfigureShmemLogger(uint32_t rank)
     Check(aclshmemx_set_extern_logger(ShmemLogger), "set SHMEM logger");
 }
 
+template <bool IsQuantized>
 inline AllToAllLayout::Layout GetLayout(const CocTilingParams& cocTiling)
 {
     AllToAllLayout::Layout layout;
-    if (!AllToAllLayout::MakeLayout(
+    if (!AllToAllLayout::MakeLayout<IsQuantized>(
             cocTiling.m, cocTiling.n, cocTiling.k, cocTiling.rankSize, cocTiling.commTileM, layout)) {
         throw std::invalid_argument("invalid symmetric layout shape");
     }
@@ -107,12 +108,35 @@ inline void WriteDeviceFile(std::ofstream& file, const uint8_t* device, size_t b
     }
 }
 
+inline std::vector<uint32_t> ReadSampleRows(const std::string& path, uint32_t chunkM)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        return {};
+    }
+    const auto bytes = static_cast<size_t>(file.tellg());
+    if (bytes == 0 || bytes % sizeof(uint32_t) != 0 || bytes / sizeof(uint32_t) > chunkM) {
+        throw std::runtime_error("invalid sample_rows.bin size");
+    }
+    std::vector<uint32_t> rows(bytes / sizeof(uint32_t));
+    file.seekg(0);
+    if (!file.read(reinterpret_cast<char*>(rows.data()), bytes)) {
+        throw std::runtime_error("failed to read sample_rows.bin");
+    }
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i] >= chunkM || (i > 0 && rows[i] <= rows[i - 1])) {
+            throw std::runtime_error("sample rows must be sorted, distinct and in range");
+        }
+    }
+    return rows;
+}
+
 // Ordinary GM inputs stay owned by KernelParams and are staged on every timed call.
 inline void StageInputs(
     const KernelParams& params, const CocTilingParams& cocTiling, uint8_t* symmetric, aclrtStream stream)
 {
-    const auto layout = GetLayout(cocTiling);
-    const size_t aBytes = static_cast<size_t>(layout.m) * layout.localK;
+    const auto layout = GetLayout<true>(cocTiling);
+    const size_t aBytes = static_cast<size_t>(layout.m) * layout.rowBytes;
     const size_t scaleBytes = static_cast<size_t>(layout.m) * layout.scaleK;
     Check(
         aclrtMemcpyAsync(symmetric + layout.sourceA, aBytes, params.ptrA, aBytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
@@ -127,10 +151,10 @@ inline void StageInputs(
 // Initialize receive padding and the shared readiness workspace.
 inline void InitializeSymmetricBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric)
 {
-    const auto layout = GetLayout(cocTiling);
+    const auto layout = GetLayout<true>(cocTiling);
     const size_t scaleBytes = static_cast<size_t>(cocTiling.rankSize) * layout.recvSlotRows * layout.scaleK;
     // Initialize padded rows before the first window arrives.
-    const size_t recvBytes = static_cast<size_t>(cocTiling.rankSize) * layout.recvSlotRows * layout.localK;
+    const size_t recvBytes = static_cast<size_t>(cocTiling.rankSize) * layout.recvSlotRows * layout.rowBytes;
     Check(aclrtMemset(symmetric + layout.recvA, recvBytes, 0, recvBytes), "clear receive A");
     Check(aclrtMemset(symmetric + layout.recvScaleA, scaleBytes, 127, scaleBytes), "clear receive scaleA");
     Check(aclrtMemset(symmetric + layout.ready, layout.readyBytes, 0, layout.readyBytes), "initialize ready");
@@ -148,7 +172,7 @@ inline void InitializeSymmetricBuffer(const CocTilingParams& cocTiling, uint8_t*
 
 inline void ResetSyncBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric, aclrtStream stream)
 {
-    const auto layout = GetLayout(cocTiling);
+    const auto layout = GetLayout<true>(cocTiling);
     // The previous call completed on every rank before this reset; never reset between windows.
     const size_t bytes = layout.readyBytes;
     Check(aclrtMemsetAsync(symmetric + layout.ready, bytes, 0, bytes, stream), "reset ready/frontier");
@@ -161,7 +185,7 @@ public:
         KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
         using namespace MxFp8AllToAllMatmulExample;
-        const auto layout = GetLayout(cocTiling);
+        const auto layout = GetLayout<true>(cocTiling);
         params.SetKernelParams(
             nullptr, nullptr, nullptr, static_cast<uint8_t*>(nullptr), static_cast<uint8_t*>(nullptr));
         const std::string suffix = "_" + std::to_string(rankId) + ".bin";
@@ -173,7 +197,7 @@ public:
                 Check(aclrtMemset(ptr, bytes, defaultValue, bytes), "initialize input");
             }
         };
-        allocate(params.ptrA, static_cast<size_t>(layout.m) * layout.localK, "input_a" + suffix, 0x38);
+        allocate(params.ptrA, static_cast<size_t>(layout.m) * layout.rowBytes, "input_a" + suffix, 0x38);
         allocate(params.ptrB, layout.BBytes(), "input_b" + suffix, 0x38);
         allocate(params.customPtrs[0], static_cast<size_t>(layout.m) * layout.scaleK, "input_a_scale" + suffix, 127);
         allocate(params.customPtrs[1], layout.ScaleBBytes(), "input_b_scale" + suffix, 127);
@@ -186,37 +210,25 @@ public:
         const KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
     {
         using namespace MxFp8AllToAllMatmulExample;
-        const auto layout = GetLayout(cocTiling);
+        const auto layout = GetLayout<true>(cocTiling);
         const std::string directory = dataFile.empty() ? "." : dataFile;
         const std::string suffix = "_" + std::to_string(rankId) + ".bin";
-        std::ifstream rowsFile(directory + "/sample_rows.bin", std::ios::binary | std::ios::ate);
-        if (!rowsFile) {
+        const auto rows = ReadSampleRows(directory + "/sample_rows.bin", layout.chunkM);
+        if (rows.empty()) {
             std::ofstream output(directory + "/output" + suffix, std::ios::binary);
             WriteDeviceFile(output, params.ptrC, layout.CBytes());
             return;
         }
-        const auto bytes = static_cast<size_t>(rowsFile.tellg());
-        if (bytes == 0 || bytes % sizeof(uint32_t) != 0 || bytes / sizeof(uint32_t) > layout.chunkM) {
-            throw std::runtime_error("invalid sample_rows.bin size");
-        }
-        std::vector<uint32_t> rows(bytes / sizeof(uint32_t));
-        rowsFile.seekg(0);
-        if (!rowsFile.read(reinterpret_cast<char*>(rows.data()), bytes)) {
-            throw std::runtime_error("failed to read sample_rows.bin");
-        }
         std::ofstream output(directory + "/output_samples" + suffix, std::ios::binary);
-        const size_t rowBytes = layout.n * sizeof(bfloat16_t);
-        for (size_t i = 0; i < rows.size(); ++i) {
-            if (rows[i] >= layout.chunkM || (i > 0 && rows[i] <= rows[i - 1])) {
-                throw std::runtime_error("sample rows must be sorted, distinct and in range");
-            }
-            WriteDeviceFile(output, params.ptrC + static_cast<size_t>(rows[i]) * rowBytes, rowBytes);
+        const size_t rowBytes = static_cast<size_t>(layout.n) * sizeof(bfloat16_t);
+        for (const auto row : rows) {
+            WriteDeviceFile(output, params.ptrC + static_cast<size_t>(row) * rowBytes, rowBytes);
         }
     }
 
     size_t GetSymmetricSize(const CocTilingParams& cocTiling) override
     {
-        return MxFp8AllToAllMatmulExample::GetLayout(cocTiling).symmetricBytes;
+        return MxFp8AllToAllMatmulExample::GetLayout<true>(cocTiling).symmetricBytes;
     }
     size_t GetWorkspaceSize(const CocTilingParams&) override { return 0; }
     CocCommType GetActualKernelType(const CocTilingParams&) override
@@ -232,10 +244,115 @@ public:
                cocTiling.rankSize == rankSize && cocTiling.transA == 0 && cocTiling.transB == 1 &&
                cocTiling.m0 == 256 && cocTiling.n0 == 256 && cocTiling.k0 == AllToAllLayout::SelectTileK(cocTiling.k) &&
                (cocTiling.commTileM == 256 || cocTiling.commTileM == 512 || cocTiling.commTileM == 1024) &&
-               AllToAllLayout::MakeLayout(cocTiling.m, cocTiling.n, cocTiling.k, rankSize, cocTiling.commTileM, layout);
+               AllToAllLayout::MakeLayout<true>(
+                   cocTiling.m, cocTiling.n, cocTiling.k, rankSize, cocTiling.commTileM, layout);
     }
 };
 
 REGISTER_OPERATOR(MxFp8AllToAllMatmulExample::OPERATOR_NAME, Ascend950MxFp8AllToAllMatmulOperator);
 
-#endif // ASCEND950_MXFP8_ALLTOALL_MATMUL_HOST_H
+namespace Bf16AllToAllMatmulExample {
+inline constexpr auto OPERATOR_NAME = "Ascend950Bf16AllToAllMatmul";
+namespace AllToAllLayout = Catccos::DGemm::Kernel::AllToAllMatmul;
+using MxFp8AllToAllMatmulExample::Check;
+using MxFp8AllToAllMatmulExample::GetLayout;
+using MxFp8AllToAllMatmulExample::ReadDeviceFile;
+using MxFp8AllToAllMatmulExample::WriteDeviceFile;
+
+// Ordinary GM inputs stay owned by KernelParams and are staged on every timed call.
+inline void StageInputs(
+    const KernelParams& params, const CocTilingParams& cocTiling, uint8_t* symmetric, aclrtStream stream)
+{
+    const auto layout = GetLayout<false>(cocTiling);
+    const size_t aBytes = static_cast<size_t>(layout.m) * layout.rowBytes;
+    Check(
+        aclrtMemcpyAsync(symmetric + layout.sourceA, aBytes, params.ptrA, aBytes, ACL_MEMCPY_DEVICE_TO_DEVICE, stream),
+        "stage A");
+}
+
+inline void InitializeSymmetricBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric)
+{
+    const auto layout = GetLayout<false>(cocTiling);
+    // Initialize padded rows before the first window arrives.
+    const size_t recvBytes = static_cast<size_t>(cocTiling.rankSize) * layout.recvSlotRows * layout.rowBytes;
+    Check(aclrtMemset(symmetric + layout.recvA, recvBytes, 0, recvBytes), "clear receive A");
+    std::vector<uint32_t> readyValues(layout.windowCount);
+    for (uint32_t window = 0; window < layout.windowCount; ++window) {
+        readyValues[window] = window + 1;
+    }
+    const size_t signalBytes = readyValues.size() * sizeof(uint32_t);
+    Check(
+        aclrtMemcpy(
+            symmetric + layout.readyValues, signalBytes, readyValues.data(), signalBytes, ACL_MEMCPY_HOST_TO_DEVICE),
+        "initialize ready values");
+}
+
+inline void ResetSyncBuffer(const CocTilingParams& cocTiling, uint8_t* symmetric, aclrtStream stream)
+{
+    const auto layout = GetLayout<false>(cocTiling);
+    const size_t bytes = layout.readyValues - layout.ready;
+    Check(aclrtMemsetAsync(symmetric + layout.ready, bytes, 0, bytes, stream), "reset ready/frontier");
+}
+} // namespace Bf16AllToAllMatmulExample
+
+class Ascend950Bf16AllToAllMatmulOperator : public CatccosOperator {
+public:
+    void AllocateDeviceSpace(
+        KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
+    {
+        using namespace Bf16AllToAllMatmulExample;
+        const auto layout = GetLayout<false>(cocTiling);
+
+        const std::string suffix = "_" + std::to_string(rankId) + ".bin";
+        auto allocate = [&](uint8_t*& ptr, size_t bytes, const std::string& name, int defaultValue) {
+            Check(aclrtMalloc(reinterpret_cast<void**>(&ptr), bytes, ACL_MEM_MALLOC_HUGE_FIRST), "aclrtMalloc");
+            if (!dataFile.empty()) {
+                ReadDeviceFile(dataFile + "/" + name, ptr, bytes);
+            } else {
+                Check(aclrtMemset(ptr, bytes, defaultValue, bytes), "initialize input");
+            }
+        };
+        allocate(params.ptrA, static_cast<size_t>(layout.m) * layout.rowBytes, "input_a" + suffix, 0);
+        allocate(params.ptrB, layout.BBytes(), "input_b" + suffix, 0);
+        Check(
+            aclrtMalloc(reinterpret_cast<void**>(&params.ptrC), layout.CBytes(), ACL_MEM_MALLOC_HUGE_FIRST),
+            "malloc C");
+    }
+
+    void WriteResultFile(
+        const KernelParams& params, const CocTilingParams& cocTiling, uint32_t rankId, std::string dataFile) override
+    {
+        using namespace Bf16AllToAllMatmulExample;
+        const auto layout = GetLayout<false>(cocTiling);
+        const std::string directory = dataFile.empty() ? "." : dataFile;
+        const std::string suffix = "_" + std::to_string(rankId) + ".bin";
+        std::ofstream output(directory + "/output" + suffix, std::ios::binary);
+        WriteDeviceFile(output, params.ptrC, layout.CBytes());
+    }
+
+    size_t GetSymmetricSize(const CocTilingParams& cocTiling) override
+    {
+        return Bf16AllToAllMatmulExample::GetLayout<false>(cocTiling).symmetricBytes;
+    }
+    size_t GetWorkspaceSize(const CocTilingParams&) override { return 0; }
+    CocCommType GetActualKernelType(const CocTilingParams&) override
+    {
+        return CocCommType::ASCEND950_BF16_ALLTOALL_MATMUL;
+    }
+    bool CheckCocTilingParams(uint32_t rankSize, const CocTilingParams& cocTiling) override
+    {
+        using namespace Bf16AllToAllMatmulExample;
+        AllToAllLayout::Layout layout;
+        return (rankSize == 1 || rankSize == 2 || rankSize == 4 || rankSize == 8 || rankSize == 16 ||
+                rankSize == AllToAllLayout::MAX_RANKS) &&
+               cocTiling.rankSize == rankSize && cocTiling.transA == 0 && cocTiling.transB == 1 &&
+               cocTiling.m0 == 256 && cocTiling.n0 == 256 && cocTiling.k0 == 128 &&
+               (cocTiling.commTileM == 256 || cocTiling.commTileM == 512 || cocTiling.commTileM == 1024) &&
+               AllToAllLayout::MakeLayout<false>(
+                   cocTiling.m, cocTiling.n, cocTiling.k, rankSize, cocTiling.commTileM, layout);
+    }
+};
+
+REGISTER_OPERATOR(Bf16AllToAllMatmulExample::OPERATOR_NAME, Ascend950Bf16AllToAllMatmulOperator);
+
+#endif // ASCEND950_ALLTOALL_MATMUL_FUSED_HOST_H

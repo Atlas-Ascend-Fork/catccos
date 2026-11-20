@@ -146,6 +146,104 @@ def check(directory, world, chunk_m, rank_start=0, rank_count=None, local_k=256,
             )
 
 
+def bf16_metadata(args):
+    return {
+        "world": args.world,
+        "M": args.m,
+        "N": args.n,
+        "K": args.k,
+        "seed": args.seed,
+        "dtype": "BF16",
+        "b_layout": "ColumnMajor",
+    }
+
+
+def bf16(float_values):
+    bits = np.asarray(float_values, dtype=np.float32).view(np.uint32)
+    return ((bits + np.uint32(0x7FFF) + ((bits >> 16) & 1)) >> 16).astype(np.uint16)
+
+
+def fp32(bits):
+    return (bits.astype(np.uint32) << 16).view(np.float32)
+
+
+def bf16_values(indices, salt):
+    # Integer / 16 inputs make the FP32 dot products exact for the supported test shapes.
+    x = np.asarray(indices, dtype=np.uint32) + np.uint32(salt & 0xFFFFFFFF)
+    x = (x ^ (x >> 16)) * np.uint32(0x7FEB352D)
+    x = (x ^ (x >> 15)) * np.uint32(0x846CA68B)
+    x ^= x >> 16
+    return ((x % 17).astype(np.float32) - 8) / 16
+
+
+def a_rows(args, source, dest, begin, end):
+    width = args.k // args.world
+    indices = np.arange(begin * width, end * width, dtype=np.uint32).reshape(end - begin, width)
+    return bf16_values(indices, args.seed * 1000003 + source * 65537 + dest * 8191)
+
+
+def b_matrix(args, rank):
+    # The file is [N,K] contiguous: logical B[K,N] is column-major.
+    indices = np.arange(args.n * args.k, dtype=np.uint32).reshape(args.n, args.k)
+    return bf16_values(indices, args.seed * 2000003 + rank * 104729 + 17)
+
+
+def generate_bf16(args):
+    args.path.mkdir(parents=True, exist_ok=True)
+    for rank in range(args.rank_begin, args.rank_end):
+        with (args.path / f"input_a_{rank}.bin").open("wb") as output:
+            for dest in range(args.world):
+                bf16(a_rows(args, rank, dest, 0, args.m)).tofile(output)
+        bf16(b_matrix(args, rank)).tofile(args.path / f"input_b_{rank}.bin")
+        print(
+            f"GENERATED rank={rank} M={args.m} N={args.n} K={args.k} seed={args.seed}",
+            flush=True,
+        )
+    (args.path / "manifest.json").write_text(json.dumps(bf16_metadata(args), indent=2) + "\n", encoding="utf-8")
+
+
+def check_bf16_inputs(args):
+    metadata = json.loads((args.path / "manifest.json").read_text(encoding="utf-8"))
+    if metadata != bf16_metadata(args):
+        raise ValueError("manifest does not match BF16 inputs")
+    for rank in range(args.rank_begin, args.rank_end):
+        for name, size in (("a", args.m * args.k * 2), ("b", args.n * args.k * 2)):
+            path = args.path / f"input_{name}_{rank}.bin"
+            if path.stat().st_size != size:
+                raise ValueError(f"wrong input size: {path}")
+
+
+def check_bf16(args):
+    check_bf16_inputs(args)
+    failed = False
+    for rank in range(args.rank_begin, args.rank_end):
+        output_path = args.path / f"output_{rank}.bin"
+        if output_path.stat().st_size != args.m * args.n * 2:
+            raise ValueError(f"wrong output size: {output_path}")
+        actual = np.memmap(output_path, dtype=np.uint16, mode="r", shape=(args.m, args.n))
+        b = b_matrix(args, rank).T
+        bad = 0
+        max_error = 0.0
+        for begin in range(0, args.m, 256):
+            end = min(begin + 256, args.m)
+            a = np.concatenate(
+                [a_rows(args, source, rank, begin, end) for source in range(args.world)],
+                axis=1,
+            )
+            reference = bf16(a @ b)
+            got = actual[begin:end]
+            bad += int(np.count_nonzero(got != reference))
+            error = np.abs(fp32(got) - fp32(reference))
+            max_error = max(max_error, float(np.max(error)))
+        print(
+            f"CHECK rank={rank} elements={args.m * args.n} bad={bad} max_abs={max_error} "
+            f"reference=cpu_fp32_to_bf16 full=1 status={'PASS' if bad == 0 else 'FAIL'}",
+            flush=True,
+        )
+        failed |= bad != 0
+    return int(failed)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', choices=('generate', 'check', 'check-inputs'))
@@ -153,17 +251,39 @@ def main():
     parser.add_argument('--world', type=int, choices=(1, 2, 4, 8, 16, 32), default=16)
     parser.add_argument('--rank-start', type=int, default=0)
     parser.add_argument('--rank-count', type=int)
-    parser.add_argument('--m', type=int, default=10000, help='output rows per rank')
+    parser.add_argument('--dtype', choices=('mxfp8', 'bf16'), default='mxfp8')
+    parser.add_argument('--seed', type=int, default=1, help='BF16 input seed')
+    parser.add_argument('--m', type=int, help='output rows per rank')
     parser.add_argument('--k', type=int, help='full K after AllToAll; default world*256')
-    parser.add_argument('--n', type=int, default=4096)
+    parser.add_argument('--n', type=int)
     args = parser.parse_args()
+    use_bf16 = args.dtype == 'bf16'
+    if args.m is None:
+        args.m = 3667 if use_bf16 else 10000
+    if args.n is None:
+        args.n = 3328 if use_bf16 else 4096
     if not 1 <= args.m <= 300000:
         parser.error('--m must be in [1,300000]')
-    full_k = args.k if args.k is not None else args.world * 256
-    if full_k <= 0 or full_k > 0xFFFFFFFF or full_k % (args.world * 64):
-        parser.error('K must be a positive uint32 multiple of world*64')
+    full_k = args.k if args.k is not None else (12288 if use_bf16 else args.world * 256)
+    k_multiple = args.world * (1 if use_bf16 else 64)
+    if full_k <= 0 or full_k > 0xFFFFFFFF or full_k % k_multiple:
+        parser.error(f'K must be a positive uint32 multiple of {k_multiple}')
     if args.n <= 0 or args.n > 0xFFFFFFFF or args.n % 16:
         parser.error('N must be a positive uint32 multiple of 16')
+    if use_bf16:
+        args.k = full_k
+        args.path = args.out_dir
+        args.rank_begin = args.rank_start
+        args.rank_end = args.world if args.rank_count is None else args.rank_start + args.rank_count
+        if not 0 <= args.rank_begin < args.rank_end <= args.world or args.seed < 0:
+            parser.error('invalid BF16 rank range or seed')
+        if args.mode == 'generate':
+            generate_bf16(args)
+        elif args.mode == 'check-inputs':
+            check_bf16_inputs(args)
+        else:
+            return check_bf16(args)
+        return 0
     local_k = full_k // args.world
     if args.mode == 'generate':
         generate_periodic(args.out_dir, args.world, args.m, local_k, args.n)
@@ -174,4 +294,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

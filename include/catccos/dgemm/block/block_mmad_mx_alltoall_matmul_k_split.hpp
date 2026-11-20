@@ -17,6 +17,7 @@
 #include "catlass/arch/resource.hpp"
 #include "catlass/catlass.hpp"
 #include "catlass/coord.hpp"
+#include "catlass/gemm/block/block_mmad.hpp"
 #include "catlass/gemm/dispatch_policy.hpp"
 #include "catlass/gemm/helper.hpp"
 #include "catlass/gemm/tile/tile_copy.hpp"
@@ -699,6 +700,116 @@ private:
     CopyL1ToL0A copyL1ToL0A;
     CopyL1ToL0B copyL1ToL0B;
     CopyL1ToBT copyL1ToBT;
+};
+
+// Retain CATLASS buffers/events; map each K segment to its source-major receive slot.
+template <class BaseMmad>
+class BlockMmadBf16AllToAllMatmulKSplit : public BaseMmad {
+public:
+    using Base = BaseMmad;
+    using ArchTag = typename Base::ArchTag;
+    using ElementA = typename Base::ElementA;
+    using ElementB = typename Base::ElementB;
+    using TileCopy = typename Base::TileCopy;
+    using Base::L0_TILE_K;
+    using Base::L1_TILE_K;
+    using Base::L1A_LAYOUT;
+    using Base::L1B_LAYOUT;
+    static_assert(Base::ENABLE_UNIT_FLAG && !Base::HAS_BIAS && !Base::ENABLE_L1_RESIDENT);
+    static_assert(Base::L1A_STAGES == 2 && Base::L1B_STAGES == 2);
+    static_assert(std::is_same_v<typename Base::ElementAccumulator, float>);
+
+    CATLASS_DEVICE explicit BlockMmadBf16AllToAllMatmulKSplit(Catlass::Arch::Resource<ArchTag>& resource)
+        : Base(resource)
+    {}
+
+    template <class TensorB, class TensorC>
+    CATLASS_DEVICE void operator()(
+        AscendC::GlobalTensor<ElementA>& recvA, TensorB& tensorB, TensorC& tensorC, const Catlass::GemmCoord& shape,
+        uint32_t row, uint32_t recvRows, uint32_t localK)
+    {
+        const uint32_t perSource = (localK + L1_TILE_K - 1) / L1_TILE_K;
+        const uint32_t steps = (shape.k() / localK) * perSource;
+        auto tensorL0C = tla::MakeTensor(
+            this->l0CTensorList[0], tla::MakeLayoutL0C(shape.m(), shape.n()), Catlass::Arch::PositionL0C{});
+        Load(recvA, tensorB, shape, row, recvRows, localK, perSource, 0, this->l1AListId);
+        for (uint32_t step = 0; step < steps; ++step) {
+            const uint32_t stage = this->l1AListId;
+            const uint32_t next = stage ^ 1U;
+            if (step + 1 < steps) {
+                Load(recvA, tensorB, shape, row, recvRows, localK, perSource, step + 1, next);
+            }
+            const uint32_t offset = (step % perSource) * L1_TILE_K;
+            const uint32_t kSize = ::Min(localK - offset, L1_TILE_K);
+            const uint32_t innerSteps = (kSize + L0_TILE_K - 1) / L0_TILE_K;
+            auto l1A = tla::MakeTensor(this->l1ATensorList[stage], L1A_LAYOUT, Catlass::Arch::PositionL1{});
+            auto l1B = tla::MakeTensor(this->l1BTensorList[stage], L1B_LAYOUT, Catlass::Arch::PositionL1{});
+            AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(this->l1AEventList[stage]);
+            AscendC::WaitFlag<AscendC::HardEvent::MTE2_MTE1>(this->l1BEventList[stage]);
+            for (uint32_t inner = 0; inner < innerSteps; ++inner) {
+                const uint32_t k = ::Min(kSize - inner * L0_TILE_K, L0_TILE_K);
+                const uint32_t aId = this->l0AListId;
+                const uint32_t bId = this->l0BListId;
+                auto l0A = tla::MakeTensor(
+                    this->l0ATensorList[aId], tla::MakeLayout<ElementA, typename Base::LayoutTagL0A>(shape.m(), k),
+                    Catlass::Arch::PositionL0A{});
+                auto l0B = tla::MakeTensor(
+                    this->l0BTensorList[bId], tla::MakeLayout<ElementB, typename Base::LayoutTagL0B>(k, shape.n()),
+                    Catlass::Arch::PositionL0B{});
+                auto a = GetTile(l1A, tla::MakeCoord(0U, inner * L0_TILE_K), tla::MakeShape(shape.m(), k));
+                auto b = GetTile(l1B, tla::MakeCoord(inner * L0_TILE_K, 0U), tla::MakeShape(k, shape.n()));
+                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(this->l0AEventList[aId]);
+                AscendC::WaitFlag<AscendC::HardEvent::M_MTE1>(this->l0BEventList[bId]);
+                this->copyL1ToL0A(l0A, a);
+                this->copyL1ToL0B(l0B, b);
+                if (inner + 1 == innerSteps) {
+                    AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(this->l1AEventList[stage]);
+                    AscendC::SetFlag<AscendC::HardEvent::MTE1_MTE2>(this->l1BEventList[stage]);
+                }
+                AscendC::SetFlag<AscendC::HardEvent::MTE1_M>(0);
+                AscendC::WaitFlag<AscendC::HardEvent::MTE1_M>(0);
+                const bool last = step + 1 == steps && inner + 1 == innerSteps;
+                // Accumulate all source segments in FP32; round to BF16 only once on store.
+                this->tileMmad(
+                    tensorL0C, l0A, l0B, shape.m(), shape.n(), k, step == 0 && inner == 0, last ? 0b11 : 0b10);
+                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(this->l0AEventList[aId]);
+                AscendC::SetFlag<AscendC::HardEvent::M_MTE1>(this->l0BEventList[bId]);
+                this->l0AListId = (aId + 1) % Base::L0A_STAGES;
+                this->l0BListId = (bId + 1) % Base::L0B_STAGES;
+            }
+            this->l1AListId = next;
+            this->l1BListId = next;
+        }
+        typename TileCopy::template CopyL0CToDst<TensorC> copyOut;
+        copyOut(tensorC, tensorL0C, 0b11);
+    }
+
+private:
+    template <class TensorB>
+    CATLASS_DEVICE void Load(
+        AscendC::GlobalTensor<ElementA>& recvA, TensorB& tensorB, const Catlass::GemmCoord& shape, uint32_t row,
+        uint32_t recvRows, uint32_t localK, uint32_t perSource, uint32_t step, uint32_t stage)
+    {
+        const uint32_t source = step / perSource;
+        const uint32_t offset = (step % perSource) * L1_TILE_K;
+        const uint32_t kSize = ::Min(localK - offset, L1_TILE_K);
+        auto layoutA = tla::MakeLayout(tla::MakeShape(recvRows, localK), tla::MakeStride(localK, tla::Int<1>{}));
+        auto sourceA = tla::MakeTensor(
+            recvA[static_cast<uint64_t>(source) * recvRows * localK], layoutA, Catlass::Arch::PositionGM{});
+        auto a = GetTile(sourceA, tla::MakeCoord(row, offset), tla::MakeShape(shape.m(), kSize));
+        auto b = GetTile(tensorB, tla::MakeCoord(source * localK + offset, 0U), tla::MakeShape(kSize, shape.n()));
+        auto l1A = tla::MakeTensor(this->l1ATensorList[stage], L1A_LAYOUT, Catlass::Arch::PositionL1{});
+        auto l1B = tla::MakeTensor(this->l1BTensorList[stage], L1B_LAYOUT, Catlass::Arch::PositionL1{});
+        typename TileCopy::template CopyGmToL1A<decltype(a)> copyA;
+        typename TileCopy::template CopyGmToL1B<decltype(b)> copyB;
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(this->l1AEventList[stage]);
+        AscendC::WaitFlag<AscendC::HardEvent::MTE1_MTE2>(this->l1BEventList[stage]);
+        // ND2NZ handles the per-source tail without padding the public GM inputs.
+        copyA(l1A, a);
+        copyB(l1B, b);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(this->l1AEventList[stage]);
+        AscendC::SetFlag<AscendC::HardEvent::MTE2_MTE1>(this->l1BEventList[stage]);
+    }
 };
 
 } // namespace Catccos::DGemm::Block

@@ -7,8 +7,8 @@
  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
  * See LICENSE in the root of the software repository for the full text of the License.
  */
-#ifndef ASCEND950_MXFP8_ALLTOALL_MATMUL_DEVICE_H
-#define ASCEND950_MXFP8_ALLTOALL_MATMUL_DEVICE_H
+#ifndef ASCEND950_ALLTOALL_MATMUL_FUSED_DEVICE_H
+#define ASCEND950_ALLTOALL_MATMUL_FUSED_DEVICE_H
 
 #include "catccos/dgemm/block/block_mmad_mx_alltoall_matmul_k_split.hpp"
 #include "catccos/comm/block/comm_block.hpp"
@@ -18,7 +18,7 @@
 #include "catccos/comm/tile/tile_remote_copy.hpp"
 #include "catccos/detail/remote_copy_type.hpp"
 #include "catccos/dgemm/device/device_dgemm.hpp"
-#include "catccos/dgemm/kernel/ascend950_mxfp8_alltoall_matmul.hpp"
+#include "catccos/dgemm/kernel/ascend950_alltoall_matmul_fused.hpp"
 #include "catlass/arch/arch.hpp"
 #include "catlass/epilogue/tile/tile_copy.hpp"
 #include "catlass/epilogue/tile/tile_swizzle.hpp"
@@ -26,14 +26,14 @@
 #include "catlass/gemm/gemm_type.hpp"
 #include "catlass/layout/layout.hpp"
 
+using AllToAllMatmulCommScheduler =
+    Catccos::Comm::Block::HierarchicalCommSwizzle<32, CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE, 64>;
+
 template <
     class ElementA, class LayoutA, class ElementB, class LayoutB, class ElementMxScaleA, class LayoutMxScaleA,
     class ElementMxScaleB, class LayoutMxScaleB, class ElementC, class LayoutC, uint32_t TileK = 256>
 struct Ascend950MxFp8AllToAllMatmulConfig {
     using ArchTag = Catlass::Arch::Ascend950;
-    static constexpr uint32_t CORE_COUNT = 32;
-    static constexpr uint32_t COMM_BLOCK_M = 64;
-    static constexpr uint32_t GROUP_SIZE = CATCCOS_MXFP8_ALLTOALL_GROUP_SIZE;
     using MmadDispatchPolicy = Catlass::Gemm::MmadMx<ArchTag, true, 1>;
     using L1TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<TileK>>;
     using L0TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<(TileK < 128 ? TileK : 128)>>;
@@ -51,10 +51,34 @@ struct Ascend950MxFp8AllToAllMatmulConfig {
     using TileSwizzle = Catlass::Epilogue::Tile::EpilogueIdentityTileSwizzle;
     using Dispatch = Catccos::Comm::AtlasCommHierarchicalCopy<ArchTag, 2, true>;
     using BlockComm = Catccos::Comm::Block::CommBlock<Dispatch, WordType, WordType, void, Tile, TileSwizzle>;
-    using CommScheduler = Catccos::Comm::Block::HierarchicalCommSwizzle<CORE_COUNT, GROUP_SIZE, COMM_BLOCK_M>;
+    using CommScheduler = AllToAllMatmulCommScheduler;
     using Kernel = Catccos::DGemm::Kernel::Ascend950MxFp8AllToAllMatmul<BlockMmad, BlockComm, CommScheduler>;
     using Device = Catccos::DGemm::Device::DeviceDGemm<Kernel>;
     using BarrierDevice = Catccos::DGemm::Device::DeviceDGemm<Catccos::Comm::Kernel::HierarchicalBarrier>;
 };
 
-#endif // ASCEND950_MXFP8_ALLTOALL_MATMUL_DEVICE_H
+template <class ElementA, class LayoutA, class ElementB, class LayoutB, class ElementC, class LayoutC>
+struct Ascend950Bf16AllToAllMatmulConfig {
+    using ArchTag = Catlass::Arch::Ascend950;
+    using MmadDispatchPolicy = Catlass::Gemm::MmadPingpong<ArchTag, true>;
+    using L1TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<128>>;
+    using L0TileShape = tla::Shape<tla::Int<256>, tla::Int<256>, tla::Int<64>>;
+    using TileCopy =
+        Catlass::Gemm::Tile::PackedTileCopyTla<ArchTag, ElementA, LayoutA, ElementB, LayoutB, ElementC, LayoutC>;
+    using BaseMmad = Catlass::Gemm::Block::BlockMmadTla<
+        MmadDispatchPolicy, L1TileShape, L0TileShape, ElementA, ElementB, ElementC, void, TileCopy>;
+    using BlockMmad = Catccos::DGemm::Block::BlockMmadBf16AllToAllMatmulKSplit<BaseMmad>;
+    using Word = uint8_t;
+    using WordType = Catlass::Gemm::GemmType<Word, Catlass::layout::RowMajor>;
+    using Tile = Catccos::Comm::Tile::TileRemoteCopy<
+        ArchTag, true, WordType, WordType, void, Catccos::detail::CopyDirect::Put, Catccos::detail::CopyTransport::Mte>;
+    using TileSwizzle = Catlass::Epilogue::Tile::EpilogueIdentityTileSwizzle;
+    using Dispatch = Catccos::Comm::AtlasCommHierarchicalCopy<ArchTag, 2, true>;
+    using BlockComm = Catccos::Comm::Block::CommBlock<Dispatch, WordType, WordType, void, Tile, TileSwizzle>;
+    using CommScheduler = AllToAllMatmulCommScheduler;
+    using Kernel = Catccos::DGemm::Kernel::Ascend950Bf16AllToAllMatmul<BlockMmad, BlockComm, CommScheduler>;
+    using Device = Catccos::DGemm::Device::DeviceDGemm<Kernel>;
+    using BarrierDevice = Catccos::DGemm::Device::DeviceDGemm<Catccos::Comm::Kernel::HierarchicalBarrier>;
+};
+
+#endif // ASCEND950_ALLTOALL_MATMUL_FUSED_DEVICE_H
