@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright (c) 2026 Huawei Technologies Co., Ltd.
+  This file is a part of the CANN Open Software.
+  Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+  Please refer to the License for details. You may not use this file except in compliance with the License.
+  THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+  See LICENSE in the root of the software repository for the full text of the License.
+-->
+<configuration>
+    <oatconfig>
+        <policylist>
+            <policy name="projectPolicy" desc="CATCCOS license policy">
+                <policyitem type="license" name="CANN-2.0" path=".*" filefilter="defaultPolicyFilter" desc="CANN Open Software License 2.0"/>
+            </policy>
+        </policylist>
+        <filefilterlist>
+            <filefilter name="defaultPolicyFilter" desc="Repository metadata without source license headers">
+                <filteritem type="filepath" name="LICENSE$" desc="Repository license text"/>
+                <filteritem type="filepath" name="\.gitmodules$" desc="Git submodule configuration"/>
+                <filteritem type="filepath" name="\.pre-commit-config\.yaml$" desc="Pre-commit configuration"/>
+                <filteritem type="filepath" name="pre-commit/pyproject\.toml$" desc="Lint tool configuration"/>
+                <filteritem type="filepath" name="requirements\.txt$" desc="Python dependency manifest"/>
+            </filefilter>
+            <filefilter name="binaryFileTypePolicyFilter" desc="Documentation images">
+                <filteritem type="filepath" name="docs/images/.*\.png$" desc="Documentation diagrams"/>
+                <filteritem type="filepath" name="docs/comm_swizzle/.*\.gif$" desc="Swizzle documentation animations"/>
+            </filefilter>
+        </filefilterlist>
+        <licensematcherlist>
+            <licensematcher name="CANN-2.0" desc="CANN Open Software License 2.0 header">
+                <licensetext name="
+                    CANN Open Software License Agreement Version 2.0 (the &quot;License&quot;).
+                    Please refer to the License for details. You may not use this file except in compliance with the License.
+                    THIS SOFTWARE IS PROVIDED ON AN &quot;AS IS&quot; BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+                    INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+                    See LICENSE in the root of the software repository for the full text of the License.
+                    " desc="License notice shared by CATCCOS header variants"/>
+            </licensematcher>
+        </licensematcherlist>
+    </oatconfig>
+</configuration>

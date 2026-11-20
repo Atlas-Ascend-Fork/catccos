@@ -64,3 +64,12 @@ repos:
           - "--verbose"
           - "-i"
         exclude: ^build/|tests/third_party/
+
+  # OAT 开源合规检查
+  - repo: https://gitcode.com/HiAgent/compliance
+    rev: v1.0.6
+    hooks:
+      - id: oat-check
+        pass_filenames: true
+        stages: [pre-commit]
+        verbose: true
