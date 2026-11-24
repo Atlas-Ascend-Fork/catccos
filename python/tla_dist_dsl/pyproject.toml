@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 [build-system]
 requires = ["hatchling>=1.24.2"]
 build-backend = "hatchling.build"
@@ -29,3 +37,9 @@ target-version = "py310"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Communication E2E files are standalone torchrun scripts.
+addopts = [
+  "--ignore-glob=*/end_to_end/test_remote_copy_mte.py",
+  "--ignore-glob=*/end_to_end/test_remote_copy_rdma.py",
+  "--ignore-glob=*/end_to_end/test_remote_copy_udma.py",
+]

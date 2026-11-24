@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 if(BISHENGIR_BUILD_TEMPLATE)
   if(NOT BISHENG_COMPILER_PATH)
     set(BISHENG_COMPILER_PATH "${ASCEND_HOME_PATH}/bin")
@@ -22,6 +30,8 @@ if(BISHENGIR_BUILD_TEMPLATE)
       -c
       -mllvm -disable-llvm-optzns
       -DCATLASS_ARCH=3510
+      -DTLA_DIST_ENABLE_RDMA=${TLA_DIST_ENABLE_RDMA}
+      ${TLA_DIST_RDMA_COMPILE_OPTIONS}
       -DTILING_KEY_VAR
       -DL2_CACHE_HINT
       -Wno-ignored-attributes
@@ -62,6 +72,8 @@ if(BISHENGIR_BUILD_TEMPLATE)
         "${CATLASS_TLA_DSL_ROOT}/csrc/mlir/bc/dma_common.h"
         "${CATCCOS_ROOT}/include/catccos/comm/tile/tile_remote_copy.hpp"
         "${CATCCOS_ROOT}/include/catccos/detail/remote_copy_type.hpp"
+        "${TLA_DIST_DSL_SHMEM_ROOT}/src/device/gm2gm/engine/shmem_device_rdma.hpp"
+        "${TLA_DIST_DSL_SHMEM_ROOT}/src/device/gm2gm/engine/shmem_device_udma.hpp"
         "${TLA_DIST_DSL_SHMEM_ROOT}/include/shmem.h"
         "${TLA_DIST_DSL_SHMEM_ROOT}/src/device/gm2gm/shmemi_device_cc.h"
       VERBATIM

@@ -1,0 +1,157 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// REQUIRES: rdma
+// RUN: split-file %s %t
+
+// GET/PUT and quiet lowering.
+// RUN: %tla_dist_compile %t/copy.mlir -o - | %filecheck %s --implicit-check-not=tla_dist.
+// CHECK-LABEL: func.func @rdma(
+// CHECK-SAME: %[[RDMA_PEER:[a-zA-Z0-9_]+]]: i32, %[[RDMA_QP:[a-zA-Z0-9_]+]]: i32)
+// CHECK-DAG: %[[RDMA_EVENT:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// CHECK: hivm.hir.wait_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// CHECK: call @shmem_rdma_get(
+// CHECK-SAME: %[[RDMA_PEER]], %[[RDMA_QP]], %[[RDMA_EVENT]])
+// CHECK-SAME: : ({{.*}}>, {{((i64, ){24})}}i32, i32, i32) -> ()
+// CHECK: call @shmem_rdma_put(
+// CHECK-SAME: %[[RDMA_PEER]], %[[RDMA_QP]], %[[RDMA_EVENT]])
+// CHECK-SAME: : ({{.*}}>, {{((i64, ){24})}}i32, i32, i32) -> ()
+// CHECK: call @shmem_rdma_quiet(%[[RDMA_PEER]], %[[RDMA_QP]], {{.*}}, %[[RDMA_EVENT]])
+// CHECK-SAME: : (i32, i32, memref<?xi8, strided<[?], offset: ?>, #hivm.address_space<ub>>, i32) -> ()
+
+// Operand and synchronization diagnostics.
+// RUN: sed 's/size_bytes = 512/size_bytes = 64/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=CAPACITY
+// RUN: sed 's/ub, 32/ub, 16/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=ALIGNMENT
+// RUN: sed 's/!tla.stride<16,1>/!tla.stride<32,1>/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=CONTIGUOUS
+// RUN: sed 's/!tla.shape<8,16>/!tla.shape<1,128>/g; s/!tla.stride<16,1>/!tla.stride<256,1>/g' %t/copy.mlir | %tla_dist_compile - -o /dev/null
+// RUN: sed 's/event_id = 0 : i32/event_id = -1 : i32/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=EVENT
+// RUN: sed '/tla_dist.quiet.*rdma/s/, %ub//; /tla_dist.quiet.*rdma/s/, !ub//' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=MISSING
+// RUN: sed 's/transport = "rdma"/transport = "rdma", atomic_add/' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=ATOMIC
+// CAPACITY: UB scratch exceeds remaining allocation capacity
+// ALIGNMENT: requires a statically sized, 32-byte aligned UB allocation
+// CONTIGUOUS: UB scratch tile has insufficient contiguous space
+// EVENT: attribute 'event_id' failed to satisfy constraint
+// MISSING: requires both a UB scratch tensor and event_id
+// ATOMIC: atomic ADD requires MTE and a GM destination
+
+// RUN: not %tla_dist_compile %t/scratch-offset.mlir -o - 2>&1 | %filecheck %s --check-prefix=OFFSET
+// RUN: sed 's/coord<0,1>/coord<0,8>/g' %t/scratch-offset.mlir | %tla_dist_compile - -o - | %filecheck %s --check-prefix=OFFSET-VALID
+// OFFSET: UB scratch tile start must be 32-byte aligned
+// OFFSET-VALID: call @shmem_rdma_quiet(
+
+// Automatic flag allocation and communication event reservations.
+// Each module is compiled separately because CATLASS allocates ids module-wide.
+// RUN: %tla_dist_compile %t/flags.mlir -o - | %filecheck %s --check-prefixes=RDMA,%rdma_backend --implicit-check-not=tla.flag
+// Quiet alone must reserve every required direction.
+// RUN: sed '/tla_dist.remote_copy/d' %t/flags.mlir | %tla_dist_compile - -o - | %filecheck %s --check-prefixes=QUIET,%rdma_backend --implicit-check-not=tla.flag
+// Submission alone also needs CQ polling events when its queue fills.
+// RUN: sed '/tla_dist.quiet/d' %t/flags.mlir | %tla_dist_compile - -o - | %filecheck %s --check-prefixes=COPY,%rdma_backend --implicit-check-not=tla.flag
+// Repeated submissions and quiet share one reservation per direction and ID.
+// RUN: %tla_dist_compile %t/flags.mlir --mlir-print-ir-before=tla-lower-flag-barrier-to-hivm -o /dev/null 2>&1 | %filecheck %s --check-prefix=RESERVE-%rdma_backend
+// A user name matching the internal prefix must remain legal.
+// RUN: sed 's/"forward_auto"/"__tla_dist_comm_flag_0"/' %t/flags.mlir | %tla_dist_compile - -o - | %filecheck %s --check-prefixes=RDMA,%rdma_backend --implicit-check-not=tla.flag
+// Explicit reuse remains the caller's responsibility.
+// RUN: sed 's/"forward_auto" {/"forward_auto" {id = 0 : i64, /; s/"reverse_auto" {/"reverse_auto" {id = 0 : i64, /; s/"cq_auto" {/"cq_auto" {id = 0 : i64, /' %t/flags.mlir | %tla_dist_compile - -o - | %filecheck %s --check-prefix=REUSE --implicit-check-not=tla.flag --implicit-check-not=EVENT_ID1
+
+// RDMA: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// RDMA-NEXT: hivm.hir.wait_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// RDMA: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// RDMA-NEXT: hivm.hir.wait_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// QUIET: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// QUIET: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// COPY: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// COPY: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// HNS_1825: hivm.hir.set_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID1>]
+// HNS_1825-NEXT: hivm.hir.wait_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID1>]
+// XSCALE: hivm.hir.set_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID0>]
+// XSCALE-NEXT: hivm.hir.wait_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID0>]
+// RDMA: call @shmem_rdma_get(
+// RDMA: call @shmem_rdma_put(
+// RDMA: call @shmem_rdma_quiet(
+// RDMA-NOT: hivm.hir.{{set|wait}}_flag
+// QUIET: call @shmem_rdma_quiet(
+// COPY: call @shmem_rdma_get(
+// COPY: call @shmem_rdma_put(
+
+// RESERVE-XSCALE-COUNT-2: tla.flag "__tla_dist_comm_flag_
+// RESERVE-XSCALE-NOT: tla.flag "__tla_dist_comm_flag_
+// RESERVE-HNS_1825-COUNT-3: tla.flag "__tla_dist_comm_flag_
+// RESERVE-HNS_1825-NOT: tla.flag "__tla_dist_comm_flag_
+
+// REUSE: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID0>]
+// REUSE-NEXT: hivm.hir.wait_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID0>]
+// REUSE: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID0>]
+// REUSE-NEXT: hivm.hir.wait_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID0>]
+// REUSE: hivm.hir.set_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID0>]
+// REUSE-NEXT: hivm.hir.wait_flag[<PIPE_MTE2>, <PIPE_S>, <EVENT_ID0>]
+// REUSE: call @shmem_rdma_get(
+// REUSE: call @shmem_rdma_put(
+// REUSE: call @shmem_rdma_quiet(
+
+//--- copy.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+!ub = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 32>>
+module {
+  tla.func @rdma(%dst: !gm, %src: !gm, %peer: i32, %qp: i32) {
+    "tla.vector"() ({
+      %ptr = tla.alloc_ptr{size_bytes = 512} -> !tla.ptr<f32, ub, 32>
+      %ub = tla.make_tensor_like %ptr like %src layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 32>, !gm -> !ub
+      %auto = tla.flag "reverse_auto" {src_pipe = #tla.pipe<mte3>, dst_pipe = #tla.pipe<scalar>} -> !tla.flag
+      tla.set_flag %auto : !tla.flag
+      tla.wait_flag %auto : !tla.flag
+      tla_dist.remote_copy %dst, %src, %peer, %qp, %ub {event_id = 0 : i32, mode = "get", transport = "rdma"} : !gm, !gm, i32, i32, !ub
+      tla_dist.remote_copy %dst, %src, %peer, %qp, %ub {event_id = 0 : i32, mode = "put", transport = "rdma"} : !gm, !gm, i32, i32, !ub
+      tla_dist.quiet %peer, %qp, %ub {event_id = 0 : i32, transport = "rdma"} : i32, i32, !ub
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- scratch-offset.mlir
+!layout = !tla.layout<!tla.shape<1,32>, !tla.stride<32,1>, !tla.shape<1,32>, RowMajor>
+!ub = !tla.tensor<!layout, !tla.coord<0,1>, !tla.ptr<f32, ub, 32>>
+module {
+  tla.func @quiet_offset(%peer: i32) {
+    "tla.vector"() ({
+      %ptr = tla.alloc_ptr{size_bytes = 256} -> !tla.ptr<f32, ub, 32>
+      %shape = tla.make_shape -> !tla.shape<1,32>
+      %stride = tla.make_stride -> !tla.stride<32,1>
+      %layout = tla.make_layout %shape, %stride : !tla.shape<1,32>, !tla.stride<32,1> -> !layout
+      %coord = tla.make_coord -> !tla.coord<0,1>
+      %ub = tla.make_tensor %ptr, %layout, %coord : !tla.ptr<f32, ub, 32>, !layout, !tla.coord<0,1> -> !ub
+      tla_dist.quiet %peer, %peer, %ub {event_id = 0 : i32, transport = "rdma"} : i32, i32, !ub
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- flags.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+!ub = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 32>>
+module {
+  tla.func @rdma_flags(%dst: !gm, %src: !gm, %peer: i32) {
+    "tla.vector"() ({
+      %ptr = tla.alloc_ptr{size_bytes = 512} -> !tla.ptr<f32, ub, 32>
+      %ub = tla.make_tensor_like %ptr like %src layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 32>, !gm -> !ub
+      %forward = tla.flag "forward_auto" {src_pipe = #tla.pipe<scalar>, dst_pipe = #tla.pipe<mte3>} -> !tla.flag
+      %reverse = tla.flag "reverse_auto" {src_pipe = #tla.pipe<mte3>, dst_pipe = #tla.pipe<scalar>} -> !tla.flag
+      %cq = tla.flag "cq_auto" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<scalar>} -> !tla.flag
+      tla.set_flag %forward : !tla.flag
+      tla.wait_flag %forward : !tla.flag
+      tla.set_flag %reverse : !tla.flag
+      tla.wait_flag %reverse : !tla.flag
+      tla.set_flag %cq : !tla.flag
+      tla.wait_flag %cq : !tla.flag
+      tla_dist.remote_copy %dst, %src, %peer, %peer, %ub {event_id = 0 : i32, mode = "get", transport = "rdma"} : !gm, !gm, i32, i32, !ub
+      tla_dist.remote_copy %dst, %src, %peer, %peer, %ub {event_id = 0 : i32, mode = "put", transport = "rdma"} : !gm, !gm, i32, i32, !ub
+      tla_dist.quiet %peer, %peer, %ub {event_id = 0 : i32, transport = "rdma"} : i32, i32, !ub
+    }) : () -> ()
+    tla.return
+  }
+}

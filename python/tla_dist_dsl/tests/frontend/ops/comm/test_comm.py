@@ -1,4 +1,12 @@
-"""Frontend contracts for remote_copy routes, transports and submission flags."""
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+"""Frontend contracts for remote_copy routes, transports and event IDs."""
 
 # Native-dependent imports must follow the importorskip check.
 # ruff: noqa: E402
@@ -39,21 +47,19 @@ def _ir(
     scratch_space=tla.AddressSpace.ub,
     params=None,
     peer=1,
-    flag_id=2,
-    pipes=(tla.arch.MTE2, tla.arch.MTE3),
+    event_id=2,
     in_vector=True,
 ):
     @tla.kernel
     def kernel(dst: tla.Tensor, src: tla.Tensor, workspace: tla.Tensor, peer_arg):
-        flag = tla.flag("submission", pipes[0], pipes[1], id=flag_id) if flag_id is not None else None
         if in_vector:
             with tla.vector():
                 tla_dist.remote_copy(
-                    dst, src, params, peer=peer_arg, ub_tensor=workspace if scratch else None, flag_value=flag
+                    dst, src, params, peer=peer_arg, ub_tensor=workspace if scratch else None, event_id=event_id
                 )
         else:
             tla_dist.remote_copy(
-                dst, src, params, peer=peer_arg, ub_tensor=workspace if scratch else None, flag_value=flag
+                dst, src, params, peer=peer_arg, ub_tensor=workspace if scratch else None, event_id=event_id
             )
 
     return kernel.dump_mlir(
@@ -84,17 +90,17 @@ def test_public_communication_exports():
     signature = inspect.signature(tla_dist.remote_copy)
     assert signature.parameters["peer"].kind is inspect.Parameter.KEYWORD_ONLY
     assert signature.parameters["ub_tensor"].default is None
-    assert signature.parameters["flag_value"].default is None
+    assert signature.parameters["event_id"].default is None
 
 
 @pytest.mark.parametrize("mode", ["get", "put"])
-def test_mte_gm_to_gm_uses_explicit_flag(mode):
-    text = _ir(params=tla_dist.params.CopyParams(mode=mode))
+@pytest.mark.parametrize("event_id,expected", [(0, 0), (tla.Int32(2), 2), (7, 7)])
+def test_mte_gm_to_gm_uses_explicit_event_id(mode, event_id, expected):
+    text = _ir(params=tla_dist.params.CopyParams(mode=mode), event_id=event_id)
     line = _copy_line(text)
     assert f'mode = "{mode}"' in line
     assert 'transport = "mte"' in line
-    assert "!tla.flag" in line
-    assert "id = 2" in text
+    assert f"event_id = {expected} : i32" in line
     assert "operandSegmentSizes" not in text
 
 
@@ -118,7 +124,7 @@ def test_remote_copy_rejects_nonunit_column_stride(operand, src_space, dst_space
             dst=_tensor(space=dst_space, stride=dst_stride),
             params=tla_dist.params.CopyParams(mode=mode),
             scratch=gm_to_gm,
-            flag_id=2 if gm_to_gm else None,
+            event_id=2 if gm_to_gm else None,
         )
 
 
@@ -139,7 +145,7 @@ def test_remote_copy_accepts_row_padding(src_space, dst_space, mode):
             dst=_tensor(space=dst_space, stride=(40, 1)),
             params=tla_dist.params.CopyParams(mode=mode),
             scratch=gm_to_gm,
-            flag_id=2 if gm_to_gm else None,
+            event_id=2 if gm_to_gm else None,
         )
     )
     assert "!tla.stride<32,1>" in line
@@ -168,12 +174,12 @@ def test_mte_routes_select_unspecified_mode(src_space, dst_space, expected, para
         src=_tensor(space=src_space),
         dst=_tensor(space=dst_space),
         scratch=False,
-        flag_id=None,
+        event_id=None,
         params=params,
     )
     line = _copy_line(text)
     assert f'mode = "{expected}"' in line
-    assert "!tla.flag" not in line
+    assert "event_id" not in line
     assert line.rstrip().endswith(", i32) -> ()")
     if params is not None:
         assert params.mode is None
@@ -210,12 +216,12 @@ def test_mte_routes_accept_matching_explicit_mode(src_space, dst_space, requeste
         src=_tensor(space=src_space),
         dst=_tensor(space=dst_space),
         scratch=False,
-        flag_id=None,
+        event_id=None,
         params=tla_dist.params.CopyParams(mode=requested),
     )
     line = _copy_line(text)
     assert f'mode = "{tla_dist.params.CopyMode(requested).value}"' in line
-    assert "!tla.flag" not in line
+    assert "event_id" not in line
     assert line.rstrip().endswith(", i32) -> ()")
 
 
@@ -232,62 +238,69 @@ def test_mte_routes_reject_conflicting_explicit_mode(src_space, dst_space, reque
             src=_tensor(space=src_space),
             dst=_tensor(space=dst_space),
             scratch=False,
-            flag_id=None,
+            event_id=None,
             params=tla_dist.params.CopyParams(mode=requested),
         )
 
 
-@pytest.mark.parametrize(
-    "transport,pipes",
-    [
-        ("rdma", (tla.arch.SCALAR, tla.arch.MTE3)),
-        ("sdma", (tla.arch.MTE3, tla.arch.MTE2)),
-        ("udma", (tla.arch.MTE3, tla.arch.SCALAR)),
-    ],
-)
-def test_non_mte_frontend_accepts_byte_workspace(transport, pipes):
-    line = _copy_line(
-        _ir(params=tla_dist.params.CopyParams(mode="get", transport=transport), scratch_dtype=tla.UInt8, pipes=pipes)
-    )
+@pytest.mark.parametrize("transport", ["rdma", "sdma", "udma"])
+def test_non_mte_frontend_accepts_byte_workspace(transport):
+    line = _copy_line(_ir(params=tla_dist.params.CopyParams(mode="get", transport=transport), scratch_dtype=tla.UInt8))
+    assert "event_id = 2 : i32" in line
     assert f'transport = "{transport}"' in line
     assert "!tla.ptr<ui8, ub" in line
     if transport == "udma":
         assert 'wqe_pipe = "mte3"' in line
 
 
-def test_udma_scalar_submission_uses_no_workspace_or_flag():
+def test_udma_scalar_submission_uses_no_workspace_or_event_id():
     line = _copy_line(
-        _ir(scratch=False, flag_id=None, params=tla_dist.params.CopyParams(mode="get", transport="udma", wqe_pipe="s"))
+        _ir(scratch=False, event_id=None, params=tla_dist.params.CopyParams(mode="get", transport="udma", wqe_pipe="s"))
     )
     assert 'wqe_pipe = "s"' in line
-    assert "!tla.flag" not in line
+    assert "event_id" not in line
 
 
-@pytest.mark.parametrize("scratch,flag_id", [(False, None), (False, 2), (True, None)])
-def test_gm_to_gm_requires_scratch_and_flag(scratch, flag_id):
+@pytest.mark.parametrize("scratch,event_id", [(False, None), (False, 2), (True, None)])
+def test_gm_to_gm_requires_scratch_and_event_id(scratch, event_id):
     with pytest.raises(TlaLoweringError, match="requires both"):
-        assert _ir(params=tla_dist.params.CopyParams(mode="get"), scratch=scratch, flag_id=flag_id)
+        assert _ir(params=tla_dist.params.CopyParams(mode="get"), scratch=scratch, event_id=event_id)
 
 
-def test_submission_flag_requires_explicit_id():
-    with pytest.raises(TlaLoweringError, match="requires an explicit id"):
-        assert _ir(params=tla_dist.params.CopyParams(mode="get"), flag_id=-1)
+@pytest.mark.parametrize("event_id", [-1, 8])
+def test_event_id_requires_valid_range(event_id):
+    with pytest.raises(TlaLoweringError, match="event_id must be in range 0..7"):
+        assert _ir(params=tla_dist.params.CopyParams(mode="get"), event_id=event_id)
 
 
-@pytest.mark.parametrize("transport", ["mte", "rdma", "sdma", "udma"])
-def test_submission_flag_requires_transport_pipe_direction(transport):
-    with pytest.raises(TlaLoweringError, match="flag_value must use"):
-        assert _ir(
-            params=tla_dist.params.CopyParams(mode="get", transport=transport), pipes=(tla.arch.VECTOR, tla.arch.MTE3)
-        )
+@pytest.mark.parametrize("event_id", [2.0, tla.Float32(2), True, "2"])
+def test_event_id_rejects_nonintegers(event_id):
+    with pytest.raises(TlaLoweringError, match="event_id must be a compile-time integer"):
+        assert _ir(params=tla_dist.params.CopyParams(mode="get"), event_id=event_id)
+
+
+@pytest.mark.parametrize("operation", ["remote_copy", "quiet"])
+def test_event_id_rejects_runtime_integer(operation):
+    @tla.kernel
+    def kernel(dst: tla.Tensor, src: tla.Tensor, workspace: tla.Tensor, event_id: tla.Int32):
+        params = tla_dist.params.CopyParams(mode="get", transport="rdma")
+        with tla.vector():
+            if tla.const_expr(operation == "remote_copy"):
+                tla_dist.remote_copy(dst, src, params, peer=1, ub_tensor=workspace, event_id=event_id)
+            else:
+                tla_dist.quiet(params, peer=1, ub_tensor=workspace, event_id=event_id)
+
+    with pytest.raises(TlaLoweringError, match="event_id must be a compile-time integer"):
+        kernel.dump_mlir(type_args=(_tensor(), _tensor(), _tensor(space=tla.AddressSpace.ub), tla.Int32(0)))
 
 
 @pytest.mark.parametrize("transport", ["mte", "udma"])
-def test_routes_without_workspace_reject_extra_arguments(transport):
+@pytest.mark.parametrize("scratch,event_id", [(True, None), (False, 0)])
+def test_routes_without_workspace_reject_extra_arguments(transport, scratch, event_id):
     kwargs = {"dst": _tensor(space=tla.AddressSpace.ub)} if transport == "mte" else {}
     params = tla_dist.params.CopyParams(mode="get", transport=transport, wqe_pipe="s" if transport == "udma" else None)
     with pytest.raises(TlaLoweringError, match="does not accept"):
-        assert _ir(params=params, **kwargs)
+        assert _ir(params=params, scratch=scratch, event_id=event_id, **kwargs)
 
 
 @pytest.mark.parametrize("transport", ["rdma", "udma", "sdma"])
@@ -332,7 +345,7 @@ def test_atomic_add_requires_gm_destination():
         assert _ir(
             dst=_tensor(space=tla.AddressSpace.ub),
             scratch=False,
-            flag_id=None,
+            event_id=None,
             params=tla_dist.params.CopyParams(atomic_mode=tla.params.AtomicMode.ADD),
         )
 
@@ -426,3 +439,126 @@ def test_barrier_all_requires_vector():
 
     with pytest.raises(TlaCoreAPIError, match="tla.vector"):
         kernel.dump_mlir()
+
+
+@pytest.mark.parametrize("transport", ["rdma", "udma"])
+def test_quiet_frontend(transport):
+    @tla.kernel
+    def kernel(workspace: tla.Tensor, peer: tla.Int32):
+        with tla.vector():
+            if tla.const_expr(transport == "rdma"):
+                tla_dist.quiet(
+                    tla_dist.params.CopyParams(transport=transport), peer=peer, ub_tensor=workspace, event_id=2
+                )
+            else:
+                tla_dist.quiet(tla_dist.params.CopyParams(transport=transport), peer=peer)
+
+    text = kernel.dump_mlir(type_args=(_tensor(space=tla.AddressSpace.ub), tla.Int32(1)))
+    line = next(line for line in text.splitlines() if '"tla_dist.quiet"' in line)
+    assert f'transport = "{transport}"' in line
+    assert ("event_id = 2 : i32" in line) == (transport == "rdma")
+    assert tla_dist.quiet.__name__ in tla_dist.__all__
+
+
+@pytest.mark.parametrize("transport", ["mte", "sdma", "invalid"])
+def test_quiet_rejects_other_transports(transport):
+    @tla.kernel
+    def kernel(peer: tla.Int32):
+        with tla.vector():
+            tla_dist.quiet(tla_dist.params.CopyParams(transport=transport), peer=peer)
+
+    with pytest.raises(TlaLoweringError, match="rdma or udma"):
+        kernel.dump_mlir(type_args=(tla.Int32(1),))
+
+
+@pytest.mark.parametrize(
+    "transport,scratch,event_id,message",
+    [
+        ("rdma", False, 0, "requires both"),
+        ("rdma", True, None, "requires both"),
+        ("udma", True, None, "does not accept"),
+        ("udma", False, 0, "does not accept"),
+        ("rdma", True, -1, "event_id must be in range 0..7"),
+        ("rdma", True, 8, "event_id must be in range 0..7"),
+        ("rdma", True, True, "event_id must be a compile-time integer"),
+    ],
+)
+def test_quiet_checks_resources(transport, scratch, event_id, message):
+    @tla.kernel
+    def kernel(workspace: tla.Tensor, peer: tla.Int32):
+        with tla.vector():
+            tla_dist.quiet(
+                tla_dist.params.CopyParams(transport=transport),
+                peer=peer,
+                ub_tensor=workspace if scratch else None,
+                event_id=event_id,
+            )
+
+    with pytest.raises(TlaLoweringError, match=message):
+        kernel.dump_mlir(type_args=(_tensor(space=tla.AddressSpace.ub), tla.Int32(1)))
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_mte_ignores_qp_idx(dynamic):
+    @tla.kernel
+    def kernel(dst: tla.Tensor, src: tla.Tensor, workspace: tla.Tensor, peer: tla.Int32, qp: tla.Int32):
+        with tla.vector():
+            params = tla_dist.params.CopyParams(mode="get", transport="mte", qp_idx=qp + 1 if dynamic else 1)
+            tla_dist.remote_copy(dst, src, params, peer=peer, ub_tensor=workspace, event_id=0)
+
+    text = kernel.dump_mlir(
+        type_args=(_tensor(), _tensor(), _tensor(space=tla.AddressSpace.ub), tla.Int32(1), tla.Int32(0))
+    )
+    copy = _copy_line(text)
+    qp_operand = copy.split("(", 1)[1].split(")", 1)[0].split(",")[3].strip()
+    definition = next(line for line in text.splitlines() if line.strip().startswith(qp_operand + " ="))
+    assert "0 : i32" in definition
+
+
+@pytest.mark.parametrize("transport", ["rdma", "udma"])
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_copy_and_quiet_select_the_same_qp(transport, dynamic):
+    @tla.kernel
+    def kernel(dst: tla.Tensor, src: tla.Tensor, workspace: tla.Tensor, peer: tla.Int32, qp: tla.Int32):
+        scratch = workspace if transport == "rdma" else None
+        event_id = 0 if transport == "rdma" else None
+        with tla.vector():
+            params = tla_dist.params.CopyParams(
+                mode="get",
+                transport=transport,
+                qp_idx=qp + 1 if dynamic else 1,
+                wqe_pipe="s" if transport == "udma" else None,
+            )
+            tla_dist.remote_copy(dst, src, params, peer=peer, ub_tensor=scratch, event_id=event_id)
+            tla_dist.quiet(params, peer=peer, ub_tensor=scratch, event_id=event_id)
+
+    text = kernel.dump_mlir(
+        type_args=(_tensor(), _tensor(), _tensor(space=tla.AddressSpace.ub), tla.Int32(1), tla.Int32(0))
+    )
+    copy = _copy_line(text)
+    qp_operand = copy.split("(", 1)[1].split(")", 1)[0].split(",")[3].strip()
+    quiet = next(line for line in text.splitlines() if '"tla_dist.quiet"' in line)
+    quiet_qp = quiet.split("(", 1)[1].split(")", 1)[0].split(",")[1].strip()
+    if dynamic:
+        assert quiet_qp == qp_operand
+        assert "arith.addi" in text
+    else:
+        for value in (qp_operand, quiet_qp):
+            definition = next(line for line in text.splitlines() if line.strip().startswith(value + " ="))
+            assert "1 : i32" in definition
+
+
+def test_quiet_uses_only_transport_and_qp():
+    @tla.kernel
+    def kernel(peer: tla.Int32):
+        with tla.vector():
+            params = tla_dist.params.CopyParams(
+                transport="udma",
+                qp_idx=1,
+                mode=None,
+                atomic_mode=tla_dist.params.AtomicMode.ADD,
+                wqe_pipe="unused",
+            )
+            tla_dist.quiet(params, peer=peer)
+
+    assert '"tla_dist.quiet"' in kernel.dump_mlir(type_args=(tla.Int32(1),))

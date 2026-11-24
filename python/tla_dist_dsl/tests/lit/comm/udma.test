@@ -1,0 +1,135 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// RUN: split-file %s %t
+
+// GET/PUT and quiet lowering.
+// RUN: %tla_dist_compile %t/copy.mlir -o - | %filecheck %s --implicit-check-not=tla_dist.
+// CHECK-LABEL: func.func @udma_mte3(
+// CHECK-SAME: %[[UDMA_MTE3_PEER:[a-zA-Z0-9_]+]]: i32, %[[UDMA_MTE3_QP:[a-zA-Z0-9_]+]]: i32)
+// CHECK-DAG: %[[UDMA_EVENT:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: call @shmem_udma_mte3_get(
+// CHECK-SAME: %[[UDMA_MTE3_PEER]], %[[UDMA_MTE3_QP]], %[[UDMA_EVENT]])
+// CHECK-SAME: : ({{.*}}>, {{((i64, ){24})}}i32, i32, i32) -> ()
+// CHECK: call @shmem_udma_mte3_put(
+// CHECK-SAME: %[[UDMA_MTE3_PEER]], %[[UDMA_MTE3_QP]], %[[UDMA_EVENT]])
+// CHECK-SAME: : ({{.*}}>, {{((i64, ){24})}}i32, i32, i32) -> ()
+// CHECK: call @shmem_udma_quiet(%[[UDMA_MTE3_PEER]], %[[UDMA_MTE3_QP]])
+// CHECK-LABEL: func.func @udma_s(
+// CHECK-SAME: %[[UDMA_S_PEER:[a-zA-Z0-9_]+]]: i32, %[[UDMA_S_QP:[a-zA-Z0-9_]+]]: i32)
+// CHECK: call @shmem_udma_s_get(
+// CHECK-SAME: %[[UDMA_S_PEER]], %[[UDMA_S_QP]])
+// CHECK: call @shmem_udma_s_put(
+// CHECK-SAME: %[[UDMA_S_PEER]], %[[UDMA_S_QP]])
+// CHECK: call @shmem_udma_quiet(%[[UDMA_S_PEER]], %[[UDMA_S_QP]])
+
+// Operand and synchronization diagnostics.
+// RUN: sed 's/size_bytes = 512/size_bytes = 64/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=CAPACITY
+// RUN: sed 's/ub, 32/ub, 16/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=ALIGNMENT
+// RUN: sed 's/!tla.stride<16,1>/!tla.stride<32,1>/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=CONTIGUOUS
+// RUN: sed 's/!tla.shape<8,16>/!tla.shape<1,128>/g; s/!tla.stride<16,1>/!tla.stride<256,1>/g' %t/copy.mlir | %tla_dist_compile - -o /dev/null
+// RUN: sed 's/event_id = 0 : i32/event_id = -1 : i32/g' %t/copy.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=EVENT
+// CAPACITY: UB scratch exceeds remaining allocation capacity
+// ALIGNMENT: requires a statically sized, 32-byte aligned UB allocation
+// CONTIGUOUS: UB scratch tile has insufficient contiguous space
+// EVENT: attribute 'event_id' failed to satisfy constraint
+
+// RUN: not %tla_dist_compile %t/auto.mlir -o - 2>&1 | %filecheck %s --check-prefix=AUTO
+// AUTO: RDMA/UDMA requires explicit synchronization
+
+// Automatic flag allocation and communication event reservations.
+// Each module is compiled separately because CATLASS allocates ids module-wide.
+// RUN: %tla_dist_compile %t/flags.mlir -o - | %filecheck %s --check-prefix=UDMA --implicit-check-not=tla.flag --implicit-check-not=EVENT_ID0
+// RUN: %tla_dist_compile %t/scalar.mlir -o - | %filecheck %s --check-prefix=SCALAR --implicit-check-not=tla.flag --implicit-check-not=EVENT_ID1
+
+// UDMA: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// UDMA-NEXT: hivm.hir.wait_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID1>]
+// UDMA: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// UDMA-NEXT: hivm.hir.wait_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID1>]
+// UDMA: call @shmem_udma_mte3_get(
+// UDMA: call @shmem_udma_quiet(
+// SCALAR: hivm.hir.set_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID0>]
+// SCALAR-NEXT: hivm.hir.wait_flag[<PIPE_S>, <PIPE_MTE3>, <EVENT_ID0>]
+// SCALAR: hivm.hir.set_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID0>]
+// SCALAR-NEXT: hivm.hir.wait_flag[<PIPE_MTE3>, <PIPE_S>, <EVENT_ID0>]
+// SCALAR: call @shmem_udma_s_get(
+// SCALAR: call @shmem_udma_quiet(
+
+//--- copy.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+!ub = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 32>>
+module {
+  tla.func @udma_mte3(%dst: !gm, %src: !gm, %peer: i32, %qp: i32) {
+    "tla.vector"() ({
+      %ptr = tla.alloc_ptr{size_bytes = 512} -> !tla.ptr<f32, ub, 32>
+      %ub = tla.make_tensor_like %ptr like %src layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 32>, !gm -> !ub
+      tla_dist.remote_copy %dst, %src, %peer, %qp, %ub {event_id = 0 : i32, mode = "get", transport = "udma", wqe_pipe = "mte3"} : !gm, !gm, i32, i32, !ub
+      tla_dist.remote_copy %dst, %src, %peer, %qp, %ub {event_id = 0 : i32, mode = "put", transport = "udma", wqe_pipe = "mte3"} : !gm, !gm, i32, i32, !ub
+      tla_dist.quiet %peer, %qp {transport = "udma"} : i32, i32
+    }) : () -> ()
+    tla.return
+  }
+  tla.func @udma_s(%dst: !gm, %src: !gm, %peer: i32, %qp: i32) {
+    "tla.vector"() ({
+      tla_dist.remote_copy %dst, %src, %peer, %qp {mode = "get", transport = "udma", wqe_pipe = "s"} : !gm, !gm, i32, i32
+      tla_dist.remote_copy %dst, %src, %peer, %qp {mode = "put", transport = "udma", wqe_pipe = "s"} : !gm, !gm, i32, i32
+      tla_dist.quiet %peer, %qp {transport = "udma"} : i32, i32
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- auto.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+module {
+  tla.func @scalar_submit(%dst: !gm, %src: !gm, %peer: i32) attributes {tla.auto_sync = "v0"} {
+    "tla.vector"() ({
+      tla_dist.remote_copy %dst, %src, %peer, %peer {mode = "put", transport = "udma", wqe_pipe = "s"} : !gm, !gm, i32, i32
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- flags.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+!ub = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, ub, 32>>
+module {
+  tla.func @udma_flags(%dst: !gm, %src: !gm, %peer: i32) {
+    "tla.vector"() ({
+      %ptr = tla.alloc_ptr{size_bytes = 512} -> !tla.ptr<f32, ub, 32>
+      %ub = tla.make_tensor_like %ptr like %src layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 32>, !gm -> !ub
+      %forward = tla.flag "forward_auto" {src_pipe = #tla.pipe<scalar>, dst_pipe = #tla.pipe<mte3>} -> !tla.flag
+      %reverse = tla.flag "reverse_auto" {src_pipe = #tla.pipe<mte3>, dst_pipe = #tla.pipe<scalar>} -> !tla.flag
+      tla.set_flag %forward : !tla.flag
+      tla.wait_flag %forward : !tla.flag
+      tla.set_flag %reverse : !tla.flag
+      tla.wait_flag %reverse : !tla.flag
+      tla_dist.remote_copy %dst, %src, %peer, %peer, %ub {event_id = 0 : i32, mode = "get", transport = "udma"} : !gm, !gm, i32, i32, !ub
+      tla_dist.quiet %peer, %peer {transport = "udma"} : i32, i32
+    }) : () -> ()
+    tla.return
+  }
+}
+
+//--- scalar.mlir
+!gm = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
+module {
+  tla.func @scalar_flags(%dst: !gm, %src: !gm, %peer: i32) {
+    "tla.vector"() ({
+      %forward = tla.flag "forward_auto" {src_pipe = #tla.pipe<scalar>, dst_pipe = #tla.pipe<mte3>} -> !tla.flag
+      %reverse = tla.flag "reverse_auto" {src_pipe = #tla.pipe<mte3>, dst_pipe = #tla.pipe<scalar>} -> !tla.flag
+      tla.set_flag %forward : !tla.flag
+      tla.wait_flag %forward : !tla.flag
+      tla.set_flag %reverse : !tla.flag
+      tla.wait_flag %reverse : !tla.flag
+      tla_dist.remote_copy %dst, %src, %peer, %peer {mode = "get", transport = "udma", wqe_pipe = "s"} : !gm, !gm, i32, i32
+      tla_dist.quiet %peer, %peer {transport = "udma"} : i32, i32
+    }) : () -> ()
+    tla.return
+  }
+}

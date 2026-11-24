@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 // RUN: sed -n '/^\/\/ BEGIN_REMOTE-COPY-ROUTE$/,/^\/\/ END_REMOTE-COPY-ROUTE$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE-COPY-ROUTE.mlir && not %tla_dist_compile %t.REMOTE-COPY-ROUTE.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE-COPY-ROUTE
 // RUN: sed -n '/^\/\/ BEGIN_REMOTE-COPY-LAYOUT$/,/^\/\/ END_REMOTE-COPY-LAYOUT$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE-COPY-LAYOUT.mlir && not %tla_dist_compile %t.REMOTE-COPY-LAYOUT.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE-COPY-LAYOUT
 // RUN: sed -n '/^\/\/ BEGIN_REMOTE-COPY-DTYPE$/,/^\/\/ END_REMOTE-COPY-DTYPE$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE-COPY-DTYPE.mlir && not %tla_dist_compile %t.REMOTE-COPY-DTYPE.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE-COPY-DTYPE
@@ -5,7 +13,7 @@
 // RUN: sed -n '/^\/\/ BEGIN_REMOTE-COPY-SCRATCH-DTYPE$/,/^\/\/ END_REMOTE-COPY-SCRATCH-DTYPE$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE-COPY-SCRATCH-DTYPE.mlir && not %tla_dist_compile %t.REMOTE-COPY-SCRATCH-DTYPE.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE-COPY-SCRATCH-DTYPE
 // RUN: sed -n '/^\/\/ BEGIN_REMOTE-COPY-ELEMENT-TYPE$/,/^\/\/ END_REMOTE-COPY-ELEMENT-TYPE$/p' %s | sed '1d;$d;s|^// ||' > %t.REMOTE-COPY-ELEMENT-TYPE.mlir && not %tla_dist_compile %t.REMOTE-COPY-ELEMENT-TYPE.mlir -o - 2>&1 | %filecheck %s --check-prefix=REMOTE-COPY-ELEMENT-TYPE
 
-// REMOTE-COPY-ROUTE: error: 'tla_dist.remote_copy' op this route does not accept ub_tensor or flag_value
+// REMOTE-COPY-ROUTE: error: 'tla_dist.remote_copy' op this route does not accept ub_tensor or event_id
 // REMOTE-COPY-LAYOUT: error: 'tla_dist.remote_copy' op requires row-major src and dst
 // REMOTE-COPY-DTYPE: error: 'tla_dist.remote_copy' op requires identical src/dst element types
 // REMOTE-COPY-SCRATCH-SPACE: error: 'tla_dist.remote_copy' op requires its scratch tensor in UB
@@ -22,8 +30,7 @@
 //     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f32, ub, 256>
 //     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile1
 //     "tla.vector"() ({
-//       %copy_submit_0 = tla.flag "copy_submit_0" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_0 {mode = "get", transport = "mte"} : !tile1, !tile0, i32, !tile1, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile1, !tile0, i32, i32, !tile1
 //     }) : () -> ()
 //     tla.return
 //   }
@@ -39,8 +46,7 @@
 //     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f32, ub, 256>
 //     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile2
 //     "tla.vector"() ({
-//       %copy_submit_1 = tla.flag "copy_submit_1" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_1 {mode = "get", transport = "mte"} : !tile0, !tile1, i32, !tile2, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile1, i32, i32, !tile2
 //     }) : () -> ()
 //     tla.return
 //   }
@@ -56,8 +62,7 @@
 //     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f32, ub, 256>
 //     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile2
 //     "tla.vector"() ({
-//       %copy_submit_2 = tla.flag "copy_submit_2" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_2 {mode = "get", transport = "mte"} : !tile0, !tile1, i32, !tile2, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile1, i32, i32, !tile2
 //     }) : () -> ()
 //     tla.return
 //   }
@@ -69,8 +74,7 @@
 // module {
 //   tla.func @test(%dst: !tile0, %src: !tile0, %scratch: !tile0, %peer: i32) {
 //     "tla.vector"() ({
-//       %copy_submit_3 = tla.flag "copy_submit_3" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_3 {mode = "get", transport = "mte"} : !tile0, !tile0, i32, !tile0, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile0, i32, i32, !tile0
 //     }) : () -> ()
 //     tla.return
 //   }
@@ -86,8 +90,7 @@
 //     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<f16, ub, 256>
 //     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<f16, ub, 256>, !tile1 -> !tile2
 //     "tla.vector"() ({
-//       %copy_submit_4 = tla.flag "copy_submit_4" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_4 {mode = "get", transport = "mte"} : !tile0, !tile0, i32, !tile2, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile0, i32, i32, !tile2
 //     }) : () -> ()
 //     tla.return
 //   }
@@ -102,8 +105,7 @@
 //     %scratch_ptr = tla.alloc_ptr{size_bytes = 1024} -> !tla.ptr<i64, ub, 256>
 //     %scratch = tla.make_tensor_like %scratch_ptr like %scratch_base layoutTag(<RowMajor>) : !tla.ptr<i64, ub, 256>, !tile0 -> !tile1
 //     "tla.vector"() ({
-//       %copy_submit_5 = tla.flag "copy_submit_5" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-//       tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_5 {mode = "get", transport = "mte"} : !tile0, !tile0, i32, !tile1, !tla.flag
+//       tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile0, i32, i32, !tile1
 //     }) : () -> ()
 //     tla.return
 //   }

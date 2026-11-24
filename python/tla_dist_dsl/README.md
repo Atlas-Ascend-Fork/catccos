@@ -1,4 +1,4 @@
-# CATCCOS TLA_DIST DSL — Matmul-ReduceScatter
+# CATCCOS TLA_DIST DSL
 
 This minimal extension provides one end-to-end example for Ascend 950PR&950DT products:
 `examples/fusion_ops/matmul_reduce_scatter.py`. For rank `r`, its output is
@@ -11,7 +11,7 @@ CATCCOS owns the `tla_dist` MLIR dialect, communication lowering, SHMEM device
 bitcode, compiler/launch adapter, and SHMEM host lifecycle. The communication
 surface consists of:
 
-- `remote_copy(dst, src, params=None, *, peer, ub_tensor=None, flag_value=None)`:
+- `remote_copy(dst, src, params=None, *, peer, ub_tensor=None, event_id=None)`:
   asynchronously copy matching RowMajor FP32 tensors. GET resolves `src` on
   the peer; PUT resolves `dst` on the peer. Source and destination column
   strides must be provably 1; row padding, dynamic shapes and dynamic row
@@ -21,49 +21,66 @@ surface consists of:
   For GM↔UB, `mode` may be omitted (`None`): GM→UB selects GET and UB→GM
   selects PUT. Explicit GET/PUT values that conflict with a GM↔UB route raise
   an error. Atomic ADD requires MTE and a GM destination.
-  `CopyParams` adds `mode`, `transport`, `atomic_mode`, and the
-  UDMA-only `wqe_pipe` to upstream compute parameters.
+  `CopyParams` adds `mode`, `transport`, `atomic_mode`, the UDMA-only
+  `wqe_pipe`, and `qp_idx` to upstream compute parameters. `qp_idx` defaults
+  to 0 and selects the RDMA/UDMA queue. It accepts a constant or runtime DSL
+  integer; MTE ignores it.
 - `barrier_all()`: synchronize participating ranks and AIVs.
+- `quiet(params, *, peer, ub_tensor=None, event_id=None)`: wait for earlier
+  RDMA/UDMA GET/PUT requests to the peer on `params.transport` and
+  `params.qp_idx`. `params` must be a `CopyParams` object; only these two
+  fields are used. `mode`, `atomic_mode`, and `wqe_pipe` do not affect the wait.
+  RDMA requires UB scratch and a compile-time integer `event_id`; UDMA accepts neither.
 
-RDMA, UDMA and SDMA support frontend IR generation. Their device compilation
-explicitly reports `device lowering is not implemented`.
+RDMA and UDMA support GM→GM GET/PUT on AIV and mixed-AIV kernels with explicit
+synchronization. RDMA availability and backend settings are read from the selected
+SHMEM build configuration. SDMA device compilation reports `device lowering is not implemented`.
 
-| Route / submission | UB scratch | Explicit flag direction |
+RDMA/UDMA split large contiguous segments into NBI requests. RDMA requests
+contain at most `UINT32_MAX / sizeof(float)` elements (4 GiB minus 4 B),
+matching the XSCALE/HNS_1825 WQE byte-length field; UDMA requests contain at
+most 256 MiB. Contiguous tiles are merged before splitting; padded tiles
+are split within each row without copying padding. The helper adds no quiet;
+the caller waits for all submitted chunks through `quiet`.
+
+| Route / submission | UB scratch | Reserved directions for `event_id` |
 | --- | --- | --- |
 | MTE GM→GM | FP32 staging; rows padded to 32 B | MTE2→MTE3 |
 | MTE GM↔UB | None | None |
-| RDMA GM→GM | Control workspace, more than 64 B | SCALAR→MTE3 |
-| SDMA GM→GM | At least 64 B, aligned to 64 B | MTE3→MTE2 |
-| UDMA GM→GM, `wqe_pipe="mte3"` (default) | 256 B WQE workspace | MTE3→SCALAR |
-| UDMA GM→GM, `wqe_pipe="s"` | None | None |
+| RDMA GM→GM / quiet, XSCALE | 128 B control workspace | SCALAR→MTE3, MTE3→SCALAR |
+| RDMA GM→GM / quiet, HNS_1825 | 128 B control workspace | SCALAR→MTE3, MTE3→SCALAR, MTE2→SCALAR |
+| UDMA GM→GM, `wqe_pipe="mte3"` (default) | 256 B WQE workspace | SCALAR→MTE3, MTE3→SCALAR |
+| UDMA GM→GM, `wqe_pipe="s"`; UDMA quiet | None | None |
 
-`tla.flag(name, src_pipe, dst_pipe, id=N)` creates a synchronization handle
-specifying the pipe direction and hardware event id. Pass it to `remote_copy`
-through `flag_value`. For MTE GM→GM copies, the helper uses this flag internally
-to synchronize MTE2→MTE3 staging through UB, ensuring the load into UB completes
-before the store from UB proceeds. Creating a flag does not perform
-synchronization, and the internal staging synchronization does not guarantee
-completion of the final store.
+`event_id` is a compile-time integer in `[0, 8)`. Supply it together with UB
+scratch on routes that require them; omit both on the other routes. Control
+workspaces may use UInt8. RDMA/UDMA lowering checks the scratch tile's 32 B
+alignment and contiguous capacity; the caller manages its lifetime.
 
-Scratch and flag must either both be supplied or both be absent. Control
-workspaces may use UInt8. The caller guarantees scratch capacity, alignment
-and lifetime; these are not checked automatically. Supplied flags must have
-an explicit id in `[0, 8)` and the matching pipe direction.
-The compiler runs flag lowering before communication lowering. It preserves
-flag definitions with remaining consumers and writes resolved ids back to
-them, so communication lowering reads ids without allocating them itself.
+Immediately before CATLASS flag lowering, CATCCOS reserves the specified ID in
+every direction listed above by inserting unused `tla.flag` declarations.
+CATLASS's existing allocator skips these IDs for automatic flags, then removes
+the declarations without emitting set/wait instructions. Communication lowering
+passes the integer ID directly to the device helper. Explicit reuse of the same
+direction and ID remains the caller's responsibility; CATCCOS does not check it.
+
+For MTE GM→GM copies, the helper uses the ID to synchronize MTE2→MTE3 staging
+through UB. The caller chooses separate IDs for double-buffered UB slots and
+uses ordinary MTE3→MTE2 flags to wait before reusing each slot. RDMA/UDMA
+submissions on the same AIV may reuse one ID: submission completes its local
+pipeline synchronization before returning, while the GM data transfer may
+remain in flight until `quiet` completes.
 
 All communication operations require a `tla.vector()` region. For example:
 
 ```python
-copy_flag = tla.flag("copy_submit", tla.arch.MTE2, tla.arch.MTE3, id=0)
 copy_done = tla.flag("copy_done", tla.arch.MTE3, tla.arch.MTE2)
 with tla.vector():
     tla_dist.remote_copy(
         dst, src,
         tla_dist.params.CopyParams(mode="get", transport="mte",
                                    atomic_mode=tla_dist.params.AtomicMode.ADD),
-        ub_tensor=scratch, flag_value=copy_flag, peer=peer,
+        peer=peer, ub_tensor=scratch, event_id=0,
     )
     tla.set_flag(copy_done)
     tla.wait_flag(copy_done)
@@ -74,8 +91,8 @@ completion waits, scratch reuse, remote readiness and cross-rank visibility.
 The MTE GM→GM helper only synchronizes its internal MTE2→MTE3 staging edge;
 it does not allocate another event for the reverse direction or wait for
 the final store. For an 8×13 FP32 tile, staging needs 8×16×4 = 512 B.
-RDMA/UDMA/SDMA require SHMEM quiet support when their device paths are
-implemented; the DSL does not yet expose quiet.
+RDMA/UDMA callers use `quiet` before consuming GET results, reusing payload
+buffers, or notifying a PUT receiver.
 
 Use `catccos.tla_dist.compile`
 to lower communication operations and launch with `block_num=<AIC count>`.
@@ -126,6 +143,31 @@ bash build.sh
 python -m pip install -e .
 ```
 
+CATCCOS reads RDMA settings from the selected SHMEM source tree. The default
+is `3rdparty/shmem`; select a third-party SHMEM tree with:
+
+```bash
+TLA_DIST_DSL_SHMEM_ROOT=/path/to/shmem bash build.sh
+```
+
+The selected tree must contain the device sources. If `build/CMakeCache.txt`
+or `build/compile_commands.json` is missing, CATCCOS prints the missing path
+and builds with RDMA disabled; MTE and UDMA remain available. UDMA helpers
+are compiled with relay disabled and require a matching SHMEM build at runtime.
+To enable RDMA, build SHMEM first and use its matching Host library and Python
+package at runtime.
+CATCCOS reads `ACLSHMEM_RDMA_SUPPORT`, `SOC_TYPE`, and `ACLSHMEM_RDMA_BACKEND`
+from the cache and checks the device compilation definitions against them.
+With RDMA enabled, the supported configurations are Ascend950 with XSCALE or
+HNS_1825. HNS_1825's effective `ACLSHMEMI_HNS_1825_PI_ON_CHIP=0` or `=1`
+is also read from the device commands and applied to both AIV and mixed-AIV
+helpers. Invalid or inconsistent configuration causes a configuration error.
+
+When SHMEM has `ACLSHMEM_RDMA_SUPPORT=OFF`, CATCCOS omits RDMA GET/PUT and
+quiet helpers. Lowering these operations reports `RDMA is not enabled in this
+build`. CMake tracks both SHMEM configuration files and reruns configuration
+when they change. `TLA_DIST_RDMA_BACKEND` is an internal detected value.
+
 `build.sh` selects pybind11 from the active Python package for both CMake
 builds, avoiding a conflicting Conda prefix installation. It first
 builds/installs Catlass's bundled `catlass._mlir` and `_tla_type_bridge_native.so`, then
@@ -133,6 +175,19 @@ builds `TlaDistCompile` and the communication bitcode. Compute templates are
 generated with the pinned Catlass's `bc_compile` helpers during the CMake build. CATCCOS does not load a
 second native MLIR bridge into Python; it exchanges MLIR text with the compiler
 subprocess. The extension uses private interfaces of the pinned Catlass DSL.
+
+Install the SHMEM Python package from the current submodule.
+`ShmemRuntime(transport="rdma"/"udma", qp_num=1)` converts UID bytes with
+`UniqueId.from_bytes()` and creates an `InitAttr`. It calls the public Python
+bindings `aclshmemx_set_attr_uniqueid_args` and `aclshmemx_set_qp_num`, then
+sets `option_attr.data_op_engine_type` and calls `aclshmemx_init_attr`.
+The default MTE path keeps SHMEM's four-argument Python UID initializer and
+ignores `qp_num`. Host and stream barriers also use SHMEM's public Python
+bindings. For RDMA/UDMA, all ranks must use the same QP count, and kernels
+must keep `0 <= qp_idx < qp_num`. Each `(peer, qp_idx)` is submitted and waited
+on sequentially by one AIV. UDMA QP APIs require `ACLSHMEM_RELAY_SUPPORT=OFF`;
+the build checks the available SHMEM configuration for this requirement.
+Older installed wheels must be replaced when updating the submodule.
 
 The build emits separate AIV and mixed-AIV templates. The mixed template uses
 `-D__CCE_AICORE_ENABLE_MIX__=1` to select SHMEM hardware synchronization through
@@ -178,9 +233,19 @@ With native MLIR Python bindings available:
 ```bash
 python -m pip install -e '.[test]'
 export TORCH_DEVICE_BACKEND_AUTOLOAD=0
-python -m pytest tests -q
+python -m pytest -q
 cmake --build csrc/mlir/build --target check-tla-dist-lit
 ```
+
+Pytest automatically skips RDMA kernel compilation and linking tests when the
+build disables RDMA; they run when the selected SHMEM build enables XSCALE or
+HNS_1825. The tests read `TlaDistCompile.json` beside the selected compiler,
+which CMake generates and packages with the executable. Frontend validation
+and build script tests run regardless of the selected backend.
+Lit also selects tests using the build configuration: an RDMA-disabled build checks
+that RDMA GET, PUT, and quiet fail with `RDMA is not enabled in this build`;
+an RDMA-enabled build runs the RDMA lowering tests instead. UDMA lowering,
+flag reservation, and diagnostic tests run in both configurations.
 
 Pytest covers communication builders and parameters, compiler/launch ABI, bitcode
 selection, SHMEM lifecycle and Matmul-ReduceScatter frontend IR, buffer geometry,
@@ -194,16 +259,19 @@ two or more ranks on Ascend 950PR&950DT products:
 
 ```bash
 ASCEND_RT_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc-per-node=2 \
-  -m pytest tests/end_to_end -q -ra
+  tests/end_to_end/test_remote_copy_mte.py
 ```
 
 These tests cover MTE GET/PUT, GM↔UB routes, atomic ADD, padded/tail tiles,
-dynamic descriptors, scratch reuse and device barrier visibility. Ordinary
-single-process pytest skips them. The distributed example additionally checks
-the fused Matmul-ReduceScatter result. Four atomic PUT cases are explicitly
-skipped because the current runtime for Ascend 950PR&950DT products hangs during their execution;
-see the end-to-end test README for details.
+dynamic descriptors, scratch reuse and device barrier visibility.
+Pytest collection excludes these standalone scripts. All 27 MTE cases run;
+atomic PUT requires P2P DMA_ADD support between the selected devices. The
+distributed example additionally checks the fused Matmul-ReduceScatter result.
 
 CI can build and run both suites from the repository root with
 `bash .gitcode/scripts/pre_smoke.sh` and `pr_filelist.txt`. Set `ut_type=ir|lit|all`
 to select suites, or `CI_DRY_RUN=1` to print commands without running them.
+Pre-smoke builds against the repository's pinned SHMEM submodule, overriding
+`TLA_DIST_DSL_SHMEM_ROOT` for this build, without configuring or building SHMEM.
+Missing SHMEM configuration files disable RDMA in the DSL build. If the DSL
+build fails, pre-smoke stops before running the dependent tests.

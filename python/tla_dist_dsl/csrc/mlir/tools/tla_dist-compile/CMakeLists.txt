@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 find_package(Threads REQUIRED)
 
 # Host LLVM builds require the host glibc. Match the pinned upstream tool's
@@ -29,6 +37,10 @@ target_link_libraries(TlaDistCompile PRIVATE
 )
 add_dependencies(TlaDistCompile TlaDistCompilePipeline TlaDistPasses)
 
+# Keep the test capability record beside the compiler, including packaged copies.
+file(GENERATE OUTPUT "$<TARGET_FILE:TlaDistCompile>.json"
+  CONTENT "{\"rdma_backend\": \"${TLA_DIST_RDMA_BACKEND}\"}\n")
+
 # Preserve the normal build-tree tool path for diagnostics and also include a
 # copy in the Python package payload used by catccos.tla_dist.compile.
 add_custom_command(TARGET TlaDistCompile POST_BUILD
@@ -36,6 +48,7 @@ add_custom_command(TARGET TlaDistCompile POST_BUILD
           "${TLA_DIST_PYTHON_OUTPUT_DIR}/bin"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           "$<TARGET_FILE:TlaDistCompile>"
-          "${TLA_DIST_PYTHON_OUTPUT_DIR}/bin/$<TARGET_FILE_NAME:TlaDistCompile>"
+          "$<TARGET_FILE:TlaDistCompile>.json"
+          "${TLA_DIST_PYTHON_OUTPUT_DIR}/bin/"
   VERBATIM
 )

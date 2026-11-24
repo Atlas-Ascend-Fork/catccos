@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 # CATCCOS TLA DSL 预冒烟测试：根据 PR 修改的文件选择是否运行测试。
 # 用法：ut_type=ir|lit|all bash .gitcode/scripts/pre_smoke.sh [workspace]
 
@@ -129,7 +137,12 @@ echo "AscendNPU-IR: ${CATLASS_DSL_PREBUILT_ASCENDNPU_IR}"
 # ============================================================================
 
 # 两类测试均先构建 DSL；ir 运行前端 pytest，lit 运行编译器 lit 测试。
-run_test "dsl_build" bash "${dsl_root}/build.sh"
+# 使用本次提交锁定的 SHMEM，避免镜像中的外部版本缺少所需接口。
+run_test "dsl_build" env TLA_DIST_DSL_SHMEM_ROOT="${workspace}/3rdparty/shmem" bash "${dsl_root}/build.sh"
+if (( failed > 0 )); then
+  echo "ERROR: DSL build failed; cannot run DSL tests." >&2
+  exit "${failed}"
+fi
 if [[ "${mode}" == ir || "${mode}" == all ]]; then
   run_test "mlir_import" python -c 'import catccos; from catlass._mlir import ir'
   run_test "dsl_ir" python -m pytest -q "${dsl_root}/tests" --ignore="${dsl_root}/tests/lit"

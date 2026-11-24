@@ -1,8 +1,15 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Optional ACLSHMEM host runtime for CATCCOS TLA_DIST kernels."""
 
 from __future__ import annotations
 
-import ctypes
 import importlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -49,12 +56,11 @@ class ShmemRuntime:
     world_size: int
     heap_size: int
     device_id: int = 0
+    transport: str = "mte"
+    qp_num: int = 1
     _shmem: Any | None = field(default=None, init=False, repr=False)
     _allocations: dict[int, Any] = field(default_factory=dict, init=False, repr=False)
     _initialized: bool = field(default=False, init=False)
-    _host_barrier: Any | None = field(default=None, init=False, repr=False)
-    _stream_barrier: Any | None = field(default=None, init=False, repr=False)
-    _barrier_library: Any | None = field(default=None, init=False, repr=False)
 
     def initialize(self) -> ShmemRuntime:
         if self._initialized:
@@ -64,64 +70,49 @@ class ShmemRuntime:
         if not 0 <= int(self.rank) < int(self.world_size):
             raise ValueError(f"rank must be in [0, world_size), got {self.rank}/{self.world_size}")
         shmem = _load_shmem()
-        result = shmem.aclshmem_init_using_unique_id(
-            int(self.rank), int(self.world_size), int(self.heap_size), self.uid
-        )
+        if self.transport not in ("mte", "rdma", "udma"):
+            raise ValueError(f"unsupported SHMEM transport: {self.transport}")
+        if self.transport == "mte":
+            result = shmem.aclshmem_init_using_unique_id(
+                int(self.rank), int(self.world_size), int(self.heap_size), self.uid
+            )
+        else:
+            engine = shmem.OpEngineType.ROCE if self.transport == "rdma" else shmem.OpEngineType.UDMA
+            uid = shmem.UniqueId.from_bytes(bytes(self.uid))
+            attr = shmem.InitAttr()
+            result = shmem.aclshmemx_set_attr_uniqueid_args(
+                int(self.rank), int(self.world_size), int(self.heap_size), uid, attr
+            )
+            if result != 0:
+                raise ShmemRuntimeError(f"ACLSHMEM UID attribute setup failed with status {result}")
+            result = shmem.aclshmemx_set_qp_num(engine, int(self.qp_num))
+            if result != 0:
+                raise ShmemRuntimeError(f"ACLSHMEM QP configuration failed with status {result}")
+            attr.option_attr.data_op_engine_type = engine
+            result = shmem.aclshmemx_init_attr(shmem.InitMode.UNIQUEID, attr)
         if result not in (None, 0):
-            raise ShmemRuntimeError(f"aclshmem_init_using_unique_id failed with status {result}")
+            raise ShmemRuntimeError(f"ACLSHMEM UID initialization failed with status {result}")
         self._shmem = shmem
         self._initialized = True
         return self
 
-    def _check_initialized(self) -> None:
+    def _require_initialized(self) -> Any:
         if not self._initialized or self._shmem is None:
             raise ShmemRuntimeError("initialize ACLSHMEM before using the runtime")
-
-    def _require_initialized(self) -> Any:
-        self._check_initialized()
         return self._shmem
 
     def barrier_all(self) -> None:
         """Synchronize initialized ranks through ACLSHMEM's host barrier."""
-        self._check_initialized()
-        if self._host_barrier is None:
-            # The pinned SHMEM package has no Python barrier binding. Resolve
-            # the native API through the loaded extension's dependencies so it
-            # shares the same SHMEM library as initialization.
-            library = self._barrier_library
-            try:
-                if library is None:
-                    extension = importlib.import_module("shmem._pyshmem")
-                    library = ctypes.CDLL(extension.__file__)
-                barrier = library.aclshmem_barrier_all
-            except (ImportError, OSError, AttributeError) as exc:
-                raise ShmemUnavailableError("ACLSHMEM host barrier is unavailable") from exc
-            barrier.argtypes = []
-            barrier.restype = None  # native host API returns void
-            self._barrier_library = library
-            self._host_barrier = barrier
-        self._host_barrier()
+        shmem = self._require_initialized()
+        shmem.aclshmem_barrier_all()
 
     def barrier_all_on_stream(self, stream: Any) -> None:
         """Queue a world barrier on an ACL stream without synchronizing the host."""
-        self._check_initialized()
+        shmem = self._require_initialized()
         stream_handle = int(getattr(stream, "npu_stream", stream))
         if stream_handle <= 0:
             raise ValueError("stream must have a positive ACL stream handle")
-        if self._stream_barrier is None:
-            library = self._barrier_library
-            try:
-                if library is None:
-                    extension = importlib.import_module("shmem._pyshmem")
-                    library = ctypes.CDLL(extension.__file__)
-                barrier = library.aclshmemx_barrier_all_on_stream
-            except (ImportError, OSError, AttributeError) as exc:
-                raise ShmemUnavailableError("ACLSHMEM stream barrier is unavailable") from exc
-            barrier.argtypes = [ctypes.c_void_p]
-            barrier.restype = None
-            self._barrier_library = library
-            self._stream_barrier = barrier
-        self._stream_barrier(stream_handle)
+        shmem.aclshmemx_barrier_all_on_stream(stream_handle)
 
     @property
     def ffts_config(self) -> int:
@@ -162,9 +153,6 @@ class ShmemRuntime:
             self._allocations.clear()
             self._initialized = False
             self._shmem = None
-            self._host_barrier = None
-            self._stream_barrier = None
-            self._barrier_library = None
         if errors:
             raise ShmemRuntimeError(f"failed to free {len(errors)} symmetric allocation(s)") from errors[0]
 

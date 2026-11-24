@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Ascend 950 Matmul-ReduceScatter implemented with the TLA DSL.
 
 For every rank ``r`` this example computes ``C_r = A_r @ B_r``.  The rows of
@@ -324,12 +332,12 @@ class _CommBuffers:
 
 @dataclass(frozen=True)
 class _CommFlags:
-    """Submission and completion events for each communication UB slot."""
+    """Compile-time submission event IDs and completion flags for each UB slot."""
 
     remote_available_0: tla_types.TlaFlag
     remote_available_1: tla_types.TlaFlag
-    remote_submit_0: tla_types.TlaFlag
-    remote_submit_1: tla_types.TlaFlag
+    remote_submit_0: int
+    remote_submit_1: int
 
 
 @tla.jit
@@ -384,7 +392,7 @@ def block_comm(
                 workspace_tile,
                 tla_dist.params.CopyParams(mode="get", atomic_mode=tla.params.AtomicMode.ADD),
                 ub_tensor=remote_ub,
-                flag_value=flags.remote_submit_0,
+                event_id=flags.remote_submit_0,
                 peer=peer,
             )
             tla.set_flag(flags.remote_available_0)
@@ -396,7 +404,7 @@ def block_comm(
                 workspace_tile,
                 tla_dist.params.CopyParams(mode="get", atomic_mode=tla.params.AtomicMode.ADD),
                 ub_tensor=remote_ub,
-                flag_value=flags.remote_submit_1,
+                event_id=flags.remote_submit_1,
                 peer=peer,
             )
             tla.set_flag(flags.remote_available_1)
@@ -437,8 +445,6 @@ def matmul_reduce_scatter(
     l0b_available_1 = tla.flag("l0b_available_1", tla.arch.CUBE, tla.arch.MTE1)
     remote_available_0 = tla.flag("remote_available_0", tla.arch.MTE3, tla.arch.MTE2)
     remote_available_1 = tla.flag("remote_available_1", tla.arch.MTE3, tla.arch.MTE2)
-    remote_submit_0 = tla.flag("remote_submit_0", tla.arch.MTE2, tla.arch.MTE3, id=0)
-    remote_submit_1 = tla.flag("remote_submit_1", tla.arch.MTE2, tla.arch.MTE3, id=1)
     l0_ab_loaded = tla.flag("l0_ab_loaded", tla.arch.MTE1, tla.arch.CUBE)
     l0c_ready = tla.flag("l0c_ready", tla.arch.CUBE, tla.arch.FIX)
     l0c_available = tla.flag("l0c_available", tla.arch.FIX, tla.arch.CUBE)
@@ -499,8 +505,8 @@ def matmul_reduce_scatter(
     comm_flags = _CommFlags(
         remote_available_0=remote_available_0,
         remote_available_1=remote_available_1,
-        remote_submit_0=remote_submit_0,
-        remote_submit_1=remote_submit_1,
+        remote_submit_0=0,
+        remote_submit_1=1,
     )
 
     matmul_block_shape = tla.make_shape(_tiling.l1_tm, _tiling.l1_tn)

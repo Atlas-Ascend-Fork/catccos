@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 #include "Dialect/TlaDist/IR/TlaDistDialect.h"
 #include "Dialect/TlaDist/IR/TlaDistOps.h"
 #include "Passes/TlaDistPasses.h"
@@ -19,8 +27,11 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 
+#include <set>
 #include <string>
+#include <tuple>
 #include <optional>
 
 using namespace mlir;
@@ -131,6 +142,64 @@ public:
     }
 };
 
+// SHMEM uses the scratch as raw storage. Pass a byte memref whose start is
+// the actual tile address, including the offset from its backing allocation.
+FailureOr<Value> buildControlBuffer(
+    Operation* op, const ::tla::TensorDescriptor& desc, int64_t bytes, PatternRewriter& rewriter)
+{
+    auto constant = [](Value v) -> int64_t {
+        llvm::APInt value;
+        return matchPattern(v, m_ConstantInt(&value)) ? value.getSExtValue() : -1;
+    };
+    auto capacity = ::tla::getStaticAllocationElementCount(desc.base);
+    if (failed(capacity) || desc.addrspace != "ub" || desc.layoutTag != ::LayoutTag::RowMajor ||
+        !desc.elementType.isIntOrFloat() || cast<::tla::PtrType>(desc.base.getType()).getAlignment() % 32 != 0)
+        return op->emitOpError("requires a statically sized, 32-byte aligned UB allocation"), failure();
+    int64_t bits = desc.elementType.getIntOrFloatBitWidth();
+    int64_t row = constant(desc.coord[0]), col = constant(desc.coord[1]);
+    int64_t rows = constant(desc.originShape[0]), cols = constant(desc.originShape[1]);
+    int64_t stride = constant(desc.stride[0]);
+    if (bits < 8 || bits % 8 || row < 0 || col < 0 || rows <= 0 || cols <= 0 || stride < cols ||
+        constant(desc.stride[1]) != 1)
+        return op->emitOpError("requires a statically known contiguous UB scratch region"), failure();
+    int64_t elementBytes = bits / 8;
+    int64_t requiredElements = (bytes + elementBytes - 1) / elementBytes;
+    int64_t requiredRows = (requiredElements - 1) / cols + 1;
+    if (rows < requiredRows || (requiredRows > 1 && stride != cols))
+        return op->emitOpError("UB scratch tile has insufficient contiguous space"), failure();
+
+    // Check the element offset before multiplying row by stride.
+    if (col > *capacity || row > (*capacity - col) / stride)
+        return op->emitOpError("UB scratch offset exceeds allocation"), failure();
+    int64_t offsetElements = row * stride + col;
+    if (*capacity - offsetElements < requiredElements)
+        return op->emitOpError("UB scratch exceeds remaining allocation capacity"), failure();
+    int64_t offsetBytes = offsetElements * elementBytes;
+    if (offsetBytes % 32 != 0)
+        return op->emitOpError("UB scratch tile start must be 32-byte aligned"), failure();
+
+    Location loc = op->getLoc();
+    auto ptr = desc.base.getDefiningOp<::tla::IntToPtrOp>();
+    Value address = ::tla::castValueToI64(rewriter, loc, ptr.getAddr());
+    if (offsetBytes)
+        address =
+            rewriter.create<arith::AddIOp>(loc, address, rewriter.create<arith::ConstantIntOp>(loc, offsetBytes, 64));
+    auto space = cast<MemRefType>(desc.bridgedBaseMemrefType).getMemorySpace();
+    auto type = MemRefType::get({bytes}, rewriter.getI8Type(), AffineMap(), space);
+    Value buffer = rewriter.create<hivm::PointerCastOp>(loc, type, address).getResult();
+    // Match the descriptor ABI of the device helper. A fully static memref
+    // would let HIVMC select its bare-pointer calling convention for quiet.
+    return ::tla::castMemrefToType(rewriter, loc, buffer, ::tla::getDynamicStridedMemrefType(type));
+}
+
+bool usesAutoSync(Operation* op)
+{
+    for (auto* parent = op->getParentOp(); parent; parent = parent->getParentOp())
+        if (parent->hasAttr("tla.auto_sync"))
+            return true;
+    return false;
+}
+
 class LowerRemoteCopyPattern final : public OpRewritePattern<RemoteCopyOp> {
 public:
     LowerRemoteCopyPattern(MLIRContext* context, DenseMap<Value, Value>& baseMemrefCache)
@@ -143,6 +212,12 @@ public:
             return operation->emitOpError("must be nested inside a tla.vector region"), failure();
         StringRef mode = operation.getMode();
         StringRef transport = operation.getTransport();
+#if !TLA_DIST_ENABLE_RDMA
+        if (transport == "rdma")
+            return operation.emitOpError("RDMA is not enabled in this build; "
+                                         "enable RDMA in SHMEM and rebuild CATCCOS DSL against that SHMEM build"),
+                   failure();
+#endif
         if (mode != "get" && mode != "put")
             return operation->emitOpError("mode must be 'put' or 'get'"), failure();
         if (transport != "mte" && transport != "rdma" && transport != "udma" && transport != "sdma")
@@ -201,12 +276,11 @@ public:
 
         bool needsScratch = gmToGm && !(transport == "udma" && wqePipe == "s");
         Value ubTile = operation.getUbTensor();
-        Value flagValue = operation.getFlagValue();
+        IntegerAttr eventId = operation.getEventIdAttr();
         std::optional<::tla::TensorDescriptor> ubDesc;
-        int32_t copyEventId = -1;
         if (needsScratch) {
-            if (!ubTile || !flagValue)
-                return operation->emitOpError("requires both a UB scratch tensor and flag_value"), failure();
+            if (!ubTile || !eventId)
+                return operation->emitOpError("requires both a UB scratch tensor and event_id"), failure();
             auto ubDescOp = ubTile.getDefiningOp<::tla::TensorDescOp>();
             if (!ubDescOp)
                 return rewriter.notifyMatchFailure(operation, "expected UB tensor_desc operand");
@@ -214,42 +288,25 @@ public:
             if (failed(decoded))
                 return operation->emitOpError("failed to decode UB descriptor"), failure();
             ubDesc = *decoded;
-            if (ubDesc->addrspace != "ub")
+            if (transport == "mte" && ubDesc->addrspace != "ub")
                 return operation->emitOpError("requires its scratch tensor in UB"), failure();
             if (transport == "mte" && ubDesc->elementType != srcDesc.elementType)
                 return operation->emitOpError("requires identical src and UB scratch element types"), failure();
-            auto flag = flagValue.getDefiningOp<::tla::FlagOp>();
-            if (!flag || !isa<::tla::FlagType>(flagValue.getType()))
-                return operation->emitOpError("flag_value must be created by tla.flag"), failure();
-            int64_t id = flag.getId();
-            if (id < 0 || id >= 8)
-                return operation->emitOpError(
-                           "flag_value requires a resolved id in [0, 8); run tla-lower-flag-barrier-to-hivm first"),
-                       failure();
-            copyEventId = static_cast<int32_t>(id);
-            ::Pipe srcPipe = ::Pipe::mte2;
-            ::Pipe dstPipe = ::Pipe::mte3;
-            if (transport == "rdma")
-                srcPipe = ::Pipe::scalar;
-            else if (transport == "sdma") {
-                srcPipe = ::Pipe::mte3;
-                dstPipe = ::Pipe::mte2;
-            } else if (transport == "udma") {
-                srcPipe = ::Pipe::mte3;
-                dstPipe = ::Pipe::scalar;
-            }
-            if (flag.getSrcPipe().getPipe() != srcPipe || flag.getDstPipe().getPipe() != dstPipe)
-                return operation->emitOpError("flag_value has the wrong source/destination pipe direction"), failure();
-        } else if (ubTile || flagValue) {
-            return operation->emitOpError("this route does not accept ub_tensor or flag_value"), failure();
+        } else if (ubTile || eventId) {
+            return operation->emitOpError("this route does not accept ub_tensor or event_id"), failure();
         }
-        if (transport != "mte")
+        if (transport == "sdma")
             return operation->emitOpError() << transport << " device lowering is not implemented", failure();
 
         std::string route = gmToGm ? "gm_row_major_to_gm_row_major" :
                             gmToUb ? "gm_row_major_to_ub_row_major" :
                                      "ub_row_major_to_gm_row_major";
         std::string calleeName = "shmem_remote_" + mode.str() + "_" + route + "_float";
+
+        if (transport != "mte") {
+            calleeName =
+                "shmem_" + transport.str() + "_" + (transport == "udma" ? wqePipe.str() + "_" : "") + mode.str();
+        }
 
         auto buildRuntimeMemref = [&](const ::tla::TensorDescriptor& descriptor) -> FailureOr<Value> {
             FailureOr<Value> base = ::tla::getOrMaterializeDescriptorBaseMemref(
@@ -270,7 +327,9 @@ public:
 
         SmallVector<Value, 40> operands = {*srcMemref, *dstMemref};
         if (ubDesc) {
-            auto ubMemref = buildRuntimeMemref(*ubDesc);
+            auto ubMemref = transport == "mte" ?
+                                buildRuntimeMemref(*ubDesc) :
+                                buildControlBuffer(operation, *ubDesc, transport == "rdma" ? 128 : 256, rewriter);
             if (failed(ubMemref))
                 return operation->emitOpError("failed to materialize the UB scratch runtime memref"), failure();
             operands.push_back(*ubMemref);
@@ -279,13 +338,15 @@ public:
         auto dstPayload = buildDescriptorPayload(rewriter, operation->getLoc(), dstDesc);
         payload.append(dstPayload.begin(), dstPayload.end());
         operands.append(payload.begin(), payload.end());
-        if (ubDesc) {
+        if (transport == "mte" && ubDesc) {
             auto ubPayload = buildDescriptorPayload(rewriter, operation->getLoc(), *ubDesc);
             operands.append(ubPayload.begin(), ubPayload.end());
         }
         operands.push_back(peer);
+        if (transport == "rdma" || transport == "udma")
+            operands.push_back(operation.getQpIdx());
         if (needsScratch)
-            operands.push_back(rewriter.create<arith::ConstantIntOp>(operation.getLoc(), copyEventId, 32));
+            operands.push_back(rewriter.create<arith::ConstantIntOp>(operation.getLoc(), eventId.getInt(), 32));
         SmallVector<Type, 40> operandTypes;
         for (Value value : operands)
             operandTypes.push_back(value.getType());
@@ -311,6 +372,49 @@ private:
     DenseMap<Value, Value>& baseMemrefCache;
 };
 
+class LowerQuietPattern final : public OpRewritePattern<QuietOp> {
+public:
+    using OpRewritePattern::OpRewritePattern;
+    LogicalResult matchAndRewrite(QuietOp op, PatternRewriter& rewriter) const override
+    {
+        if (!isInsideVectorRegion(op))
+            return op.emitOpError("requires a tla.vector region with explicit synchronization"), failure();
+        StringRef transport = op.getTransport();
+#if !TLA_DIST_ENABLE_RDMA
+        if (transport == "rdma")
+            return op.emitOpError("RDMA is not enabled in this build; "
+                                  "enable RDMA in SHMEM and rebuild CATCCOS DSL against that SHMEM build"),
+                   failure();
+#endif
+        SmallVector<Value> args{op.getPeer(), op.getQpIdx()};
+        if (transport == "rdma") {
+            if (!op.getUbTensor() || !op.getEventIdAttr())
+                return op.emitOpError("requires both a UB scratch tensor and event_id"), failure();
+            auto tile = op.getUbTensor().getDefiningOp<::tla::TensorDescOp>();
+            if (!tile)
+                return rewriter.notifyMatchFailure(op, "expected UB tensor_desc operand");
+            auto desc = ::tla::descriptorFromTensorDescOp(tile);
+            if (failed(desc))
+                return failure();
+            auto buffer = buildControlBuffer(op, *desc, 128, rewriter);
+            if (failed(buffer))
+                return failure();
+            args.push_back(*buffer);
+            args.push_back(rewriter.create<arith::ConstantIntOp>(op.getLoc(), op.getEventIdAttr().getInt(), 32));
+        } else if (transport != "udma" || op.getUbTensor() || op.getEventIdAttr()) {
+            return op.emitOpError("expected rdma with both ub_tensor and event_id, or udma without either"), failure();
+        }
+        SmallVector<Type> types;
+        for (Value arg : args)
+            types.push_back(arg.getType());
+        auto callee =
+            getOrCreateAivRuntimeCall(op->getParentOfType<ModuleOp>(), "shmem_" + transport.str() + "_quiet", types);
+        rewriter.create<func::CallOp>(op.getLoc(), callee, args);
+        rewriter.eraseOp(op);
+        return success();
+    }
+};
+
 class LowerBarrierAllPattern final : public OpRewritePattern<BarrierAllOp> {
 public:
     explicit LowerBarrierAllPattern(MLIRContext* context) : OpRewritePattern<BarrierAllOp>(context, /*benefit=*/3) {}
@@ -324,6 +428,87 @@ public:
         rewriter.create<func::CallOp>(operation->getLoc(), callee, ValueRange{});
         rewriter.eraseOp(operation);
         return success();
+    }
+};
+
+class ValidateCommAutoSyncPass final : public PassWrapper<ValidateCommAutoSyncPass, OperationPass<ModuleOp>> {
+public:
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateCommAutoSyncPass)
+
+    StringRef getArgument() const override { return "tla_dist-validate-comm-auto-sync"; }
+
+    void runOnOperation() override
+    {
+        WalkResult result = getOperation().walk([&](Operation* operation) {
+            StringRef name = operation->getName().getStringRef();
+            auto transport = operation->getAttrOfType<StringAttr>("transport");
+            bool needsExplicitSync = name == "tla_dist.quiet" ||
+                                     (name == "tla_dist.remote_copy" && transport && transport.getValue() != "mte");
+            if (needsExplicitSync && usesAutoSync(operation)) {
+                operation->emitOpError("RDMA/UDMA requires explicit synchronization");
+                return WalkResult::interrupt();
+            }
+            return WalkResult::advance();
+        });
+        if (result.wasInterrupted())
+            signalPassFailure();
+    }
+};
+
+class PrepareCommFlagsPass final : public PassWrapper<PrepareCommFlagsPass, OperationPass<ModuleOp>> {
+public:
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PrepareCommFlagsPass)
+
+    StringRef getArgument() const override { return "tla_dist-prepare-comm-flags"; }
+
+    void getDependentDialects(DialectRegistry& registry) const override { registry.insert<::tla::TlaDialect>(); }
+
+    void runOnOperation() override
+    {
+        llvm::StringSet<> names;
+        getOperation().walk([&](::tla::FlagOp flag) { names.insert(flag.getName()); });
+        // Match CATLASS's module-wide allocation scope, deduplicating by pipe pair and id.
+        std::set<std::tuple<::Pipe, ::Pipe, int64_t>> reserved;
+        unsigned nextName = 0;
+        getOperation().walk([&](Operation* op) {
+            auto copy = dyn_cast<RemoteCopyOp>(op);
+            auto quiet = dyn_cast<QuietOp>(op);
+            if (!copy && !quiet)
+                return;
+            IntegerAttr eventId = copy ? copy.getEventIdAttr() : quiet.getEventIdAttr();
+            if (!eventId)
+                return;
+            StringRef transport = copy ? copy.getTransport() : quiet.getTransport();
+            auto reserve = [&](::Pipe src, ::Pipe dst) {
+                if (!reserved.emplace(src, dst, eventId.getInt()).second)
+                    return;
+                std::string name;
+                do {
+                    name = "__tla_dist_comm_flag_" + std::to_string(nextName++);
+                } while (!names.insert(name).second);
+                OpBuilder builder(op);
+                builder.create<::tla::FlagOp>(
+                    op->getLoc(), ::tla::FlagType::get(&getContext()), name, ::tla::PipeAttr::get(&getContext(), src),
+                    ::tla::PipeAttr::get(&getContext(), dst), eventId.getInt());
+            };
+            if (copy && transport == "mte") {
+                reserve(::Pipe::mte2, ::Pipe::mte3);
+            } else if (transport == "rdma") {
+                reserve(::Pipe::scalar, ::Pipe::mte3);
+                reserve(::Pipe::mte3, ::Pipe::scalar);
+#if TLA_DIST_RDMA_BACKEND_HNS_1825
+                reserve(::Pipe::mte2, ::Pipe::scalar);
+#endif
+            } else if (copy && transport == "udma") {
+                auto pipe = copy->getAttrOfType<StringAttr>("wqe_pipe");
+                if (!pipe || pipe.getValue() == "mte3") {
+                    reserve(::Pipe::scalar, ::Pipe::mte3);
+                    reserve(::Pipe::mte3, ::Pipe::scalar);
+                }
+            }
+            // CATLASS reserves explicit ids before allocating automatic flags,
+            // then erases this unused declaration without emitting set/wait.
+        });
     }
 };
 
@@ -359,7 +544,7 @@ public:
         DenseMap<Value, Value> baseMemrefCache;
         RewritePatternSet patterns(&getContext());
         patterns.add<LowerRemoteCopyPattern>(&getContext(), baseMemrefCache);
-        patterns.add<LowerBarrierAllPattern>(&getContext());
+        patterns.add<LowerQuietPattern, LowerBarrierAllPattern>(&getContext());
         if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
             signalPassFailure();
             return;
@@ -378,8 +563,17 @@ public:
 
 } // namespace
 
+std::unique_ptr<Pass> createValidateCommAutoSyncPass() { return std::make_unique<ValidateCommAutoSyncPass>(); }
+
+std::unique_ptr<Pass> createPrepareCommFlagsPass() { return std::make_unique<PrepareCommFlagsPass>(); }
+
 std::unique_ptr<Pass> createLowerCommPass() { return std::make_unique<LowerCommPass>(); }
 
-void registerTlaDistPasses() { PassRegistration<LowerCommPass>(); }
+void registerTlaDistPasses()
+{
+    PassRegistration<ValidateCommAutoSyncPass>();
+    PassRegistration<PrepareCommFlagsPass>();
+    PassRegistration<LowerCommPass>();
+}
 
 } // namespace tla_dist

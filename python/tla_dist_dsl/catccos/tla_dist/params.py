@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Remote-copy parameters and the upstream compute parameter surface."""
 
 from __future__ import annotations
@@ -7,6 +15,7 @@ from enum import Enum
 from typing import Any
 
 from catlass import params as _params
+from catlass.core_api import IndexLike
 from catlass.params import AtomicMode
 
 
@@ -29,20 +38,22 @@ class CopyWqePipe(str, Enum):
 
 @dataclass
 class CopyParams(_params.CopyParams):
-    """Compile-time settings for ``tla_dist.remote_copy``.
+    """Parameters for ``tla_dist.remote_copy`` and ``tla_dist.quiet``.
 
     GET reads peer ``src`` into local ``dst``; PUT writes local ``src`` to
     peer ``dst``. GM->GM requires an explicit mode. ``mode=None`` leaves
     the mode unspecified, selecting GET for GM->UB and PUT for UB->GM.
     An explicit mode must match the GM<->UB route.
-    Only MTE has device lowering. Event ids belong to the
-    ``tla.flag`` passed to ``remote_copy``, rather than to these parameters.
+    RDMA/UDMA GM->GM requests complete through quiet. The compile-time
+    ``event_id`` is passed separately to ``remote_copy`` and ``quiet``.
     """
 
     mode: CopyMode | None = None
     atomic_mode: AtomicMode = AtomicMode.NONE
     transport: CopyTransport = CopyTransport.MTE
     wqe_pipe: CopyWqePipe | None = None
+    # Runtime DSL integers are supported for RDMA/UDMA; MTE ignores this field.
+    qp_idx: IndexLike = 0
 
     def _validate(self) -> None:
         if self.mode is not None and self.mode not in (CopyMode.PUT, CopyMode.GET):

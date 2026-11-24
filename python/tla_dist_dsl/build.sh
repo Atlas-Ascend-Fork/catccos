@@ -1,5 +1,24 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 set -euo pipefail
+
+while (( $# )); do
+  case "$1" in
+    -h|--help)
+      echo "Usage: bash build.sh"
+      echo "RDMA settings are read from TLA_DIST_DSL_SHMEM_ROOT/build (default: 3rdparty/shmem/build)."
+      exit 0
+      ;;
+    *) echo "error: unknown argument: $1" >&2; exit 1 ;;
+  esac
+done
 
 tla_dist_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 catccos_root="$(cd "${tla_dist_root}/../.." && pwd)"
@@ -28,8 +47,8 @@ if [[ ! -f "${shmem_root}/include/shmem.h" ]]; then
 fi
 
 # Scheme 2 keeps the two native compiler images in separate processes. Build
-# Catlass's own Python type bridge first; CATCCOS itself only builds the
-# TlaDistCompile executable and communication device bitcode below.
+# Catlass's own Python type bridge first; CATCCOS builds the TlaDistCompile
+# executable and communication device bitcode below.
 if [[ -z "${CATLASS_DSL_PREBUILT_ASCENDNPU_IR:-}" &&
       -n "${TLA_DSL_PREBUILT_ASCENDNPU_IR:-}" ]]; then
   export CATLASS_DSL_PREBUILT_ASCENDNPU_IR="${TLA_DSL_PREBUILT_ASCENDNPU_IR}"

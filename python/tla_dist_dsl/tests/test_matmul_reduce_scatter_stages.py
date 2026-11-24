@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Compile-only coverage for fixed double buffering and tiling."""
 
 from __future__ import annotations
@@ -6,6 +14,7 @@ import importlib.util
 from dataclasses import replace
 from pathlib import Path
 import re
+import sys
 
 import pytest
 
@@ -18,6 +27,7 @@ def example():
     source = Path(__file__).resolve().parents[1] / "examples/fusion_ops/matmul_reduce_scatter.py"
     spec = importlib.util.spec_from_file_location("mmrs_stages_example", source)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -39,7 +49,7 @@ def test_double_buffer_allocations(example):
     }
 
 
-def test_remote_copy_pairs_each_buffer_with_its_submission_and_completion_flags(example):
+def test_remote_copy_pairs_each_buffer_with_its_event_id_and_completion_flag(example):
     from catlass._mlir import ir as mlir_ir
     from catlass.base_dsl import BaseDSL
     from catlass.core_api import _as_value
@@ -66,12 +76,9 @@ def test_remote_copy_pairs_each_buffer_with_its_submission_and_completion_flags(
             for position, operation in enumerate(operations):
                 if operation.name != "tla_dist.remote_copy":
                     continue
-                submission = operation.operands[4].owner.operation
-                assert submission.name == "tla.flag"
-                slot = mlir_ir.IntegerAttr(submission.attributes["id"]).value
+                slot = mlir_ir.IntegerAttr(operation.attributes["event_id"]).value
                 assert slot in (0, 1)
-                assert mlir_ir.StringAttr(submission.attributes["name"]).value == f"remote_submit_{slot}"
-                scratch = operation.operands[3].owner.operation
+                scratch = operation.operands[4].owner.operation
                 assert scratch.name == "tla.make_tensor_like"
                 buffer = _as_value(scratch.operands[0])
                 assert buffer.owner.operation.name == "tla.alloc_ptr"

@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 from __future__ import annotations
 
 import importlib.util
@@ -23,6 +31,33 @@ class FakeShmem(ModuleType):
     def __init__(self) -> None:
         super().__init__("shmem")
         self.events: list[object] = []
+        self.OpEngineType = SimpleNamespace(ROCE=4, UDMA=8)
+        self.InitMode = SimpleNamespace(UNIQUEID=2)
+        self.UniqueId = SimpleNamespace(from_bytes=lambda data: SimpleNamespace(data=data))
+        self.InitAttr = lambda: SimpleNamespace(option_attr=SimpleNamespace(data_op_engine_type=1))
+        self.qp_status = 0
+        self.attr_status = 0
+        self.init_status = 0
+
+    def aclshmemx_set_attr_uniqueid_args(self, rank, world_size, heap_size, uid, attr):
+        # SHMEM fills defaults here; the selected engine must be set afterwards.
+        attr.option_attr.data_op_engine_type = 1
+        self.events.append(("set_attr", rank, world_size, heap_size, uid, attr))
+        return self.attr_status
+
+    def aclshmemx_set_qp_num(self, engine, qp_num):
+        self.events.append(("set_qp_num", engine, qp_num))
+        return self.qp_status
+
+    def aclshmemx_init_attr(self, mode, attr):
+        self.events.append(("init_attr", mode, attr, attr.option_attr.data_op_engine_type))
+        return self.init_status
+
+    def aclshmem_barrier_all(self):
+        self.events.append("barrier")
+
+    def aclshmemx_barrier_all_on_stream(self, stream):
+        self.events.append(("stream_barrier", stream))
 
     def aclshmem_init_using_unique_id(self, rank, world_size, heap_size, uid):
         self.events.append(("init", rank, world_size, heap_size, uid))
@@ -59,6 +94,26 @@ def test_symmetric_allocations_are_freed_in_reverse_order(monkeypatch) -> None:
     assert fake.events[-1] == "finalize"
 
 
+@pytest.mark.parametrize("transport,engine", [("mte", None), ("rdma", 4), ("udma", 8)])
+@pytest.mark.parametrize("qp_num", [1, 2])
+def test_uid_initialization_selects_transport(monkeypatch, transport, engine, qp_num):
+    distributed = _load_distributed()
+    fake = FakeShmem()
+    monkeypatch.setitem(sys.modules, "shmem", fake)
+    uid = b"uid\x00with-null"
+    runtime = distributed.ShmemRuntime(uid, 1, 3, 8192, transport=transport, qp_num=qp_num).initialize()
+    if transport == "mte":
+        assert fake.events == [("init", 1, 3, 8192, uid)]
+    else:
+        setup, qp_config, init = fake.events
+        assert qp_config == ("set_qp_num", engine, qp_num)
+        assert setup[:4] == ("set_attr", 1, 3, 8192)
+        assert setup[4].data == uid
+        assert init == ("init_attr", fake.InitMode.UNIQUEID, setup[5], engine)
+    assert runtime._initialized and runtime._shmem is fake
+    runtime.finalize()
+
+
 @pytest.mark.parametrize(
     "method,args,event",
     [
@@ -66,20 +121,11 @@ def test_symmetric_allocations_are_freed_in_reverse_order(monkeypatch) -> None:
         ("barrier_all_on_stream", (123,), ("stream_barrier", 123)),
     ],
 )
-def test_barriers_require_live_runtime_and_use_native_api(monkeypatch, method, args, event):
+def test_barriers_require_live_runtime_and_use_python_api(monkeypatch, method, args, event):
     distributed = _load_distributed()
     fake = FakeShmem()
     monkeypatch.setitem(sys.modules, "shmem", fake)
-    monkeypatch.setitem(sys.modules, "shmem._pyshmem", SimpleNamespace(__file__="/installed/_pyshmem.so"))
-    monkeypatch.setattr(
-        distributed.ctypes,
-        "CDLL",
-        lambda path: SimpleNamespace(
-            aclshmem_barrier_all=lambda: fake.events.append("barrier"),
-            aclshmemx_barrier_all_on_stream=lambda stream: fake.events.append(("stream_barrier", stream)),
-        ),
-    )
-    runtime = distributed.ShmemRuntime(uid="uid", rank=0, world_size=2, heap_size=4096)
+    runtime = distributed.ShmemRuntime(uid=b"uid", rank=0, world_size=2, heap_size=4096)
     barrier = getattr(runtime, method)
     with pytest.raises(distributed.ShmemRuntimeError, match="initialize"):
         barrier(*args)
@@ -92,82 +138,34 @@ def test_barriers_require_live_runtime_and_use_native_api(monkeypatch, method, a
         barrier(*args)
 
 
-def test_host_barrier_resolves_same_extension_dependencies_once(monkeypatch):
-    distributed = _load_distributed()
-    fake = FakeShmem()
-    monkeypatch.setitem(sys.modules, "shmem", fake)
-    monkeypatch.setitem(sys.modules, "shmem._pyshmem", SimpleNamespace(__file__="/installed/_pyshmem.so"))
-    calls = []
-
-    def barrier():
-        fake.events.append("barrier")
-
-    def load(path):
-        calls.append(path)
-        return SimpleNamespace(
-            aclshmem_barrier_all=barrier,
-            aclshmemx_barrier_all_on_stream=lambda stream: fake.events.append(("stream_barrier", stream)),
-        )
-
-    monkeypatch.setattr(distributed.ctypes, "CDLL", load)
-    runtime = distributed.ShmemRuntime(uid="uid", rank=0, world_size=2, heap_size=4096).initialize()
-    runtime.barrier_all()
-    runtime.barrier_all()
-    runtime.barrier_all_on_stream(123)
-    assert calls == ["/installed/_pyshmem.so"]
-    assert barrier.argtypes == [] and barrier.restype is None
-    assert fake.events[-3:] == ["barrier", "barrier", ("stream_barrier", 123)]
-    runtime.finalize()
-    assert runtime._barrier_library is None and runtime._host_barrier is None
-
-
-@pytest.mark.parametrize(
-    "method,args,kind",
-    [("barrier_all", (), "host"), ("barrier_all_on_stream", (123,), "stream")],
-)
-@pytest.mark.parametrize("load_error", [False, True])
-def test_barriers_report_unavailable_native_api(monkeypatch, method, args, kind, load_error):
-    distributed = _load_distributed()
-    fake = FakeShmem()
-    monkeypatch.setitem(sys.modules, "shmem", fake)
-    monkeypatch.setitem(sys.modules, "shmem._pyshmem", SimpleNamespace(__file__="/installed/_pyshmem.so"))
-
-    def load(path):
-        if load_error:
-            raise OSError("cannot load SHMEM dependencies")
-        return SimpleNamespace()
-
-    monkeypatch.setattr(distributed.ctypes, "CDLL", load)
-    runtime = distributed.ShmemRuntime(uid="uid", rank=0, world_size=2, heap_size=4096).initialize()
-    with pytest.raises(distributed.ShmemUnavailableError, match=f"{kind} barrier is unavailable") as error:
-        getattr(runtime, method)(*args)
-    assert isinstance(error.value.__cause__, OSError if load_error else AttributeError)
-    runtime.finalize()
-
-
 def test_stream_barrier_queues_on_requested_stream(monkeypatch):
     distributed = _load_distributed()
     fake = FakeShmem()
     monkeypatch.setitem(sys.modules, "shmem", fake)
-    monkeypatch.setitem(sys.modules, "shmem._pyshmem", SimpleNamespace(__file__="/installed/_pyshmem.so"))
-    loaded = []
-
-    def barrier(stream):
-        fake.events.append(("stream_barrier", stream))
-
-    def load(path):
-        loaded.append(path)
-        return SimpleNamespace(aclshmemx_barrier_all_on_stream=barrier)
-
-    monkeypatch.setattr(distributed.ctypes, "CDLL", load)
-    runtime = distributed.ShmemRuntime(uid="uid", rank=0, world_size=2, heap_size=4096).initialize()
+    runtime = distributed.ShmemRuntime(uid=b"uid", rank=0, world_size=2, heap_size=4096).initialize()
     with pytest.raises(ValueError, match="positive ACL stream handle"):
         runtime.barrier_all_on_stream(0)
     runtime.barrier_all_on_stream(SimpleNamespace(npu_stream=123))
     runtime.barrier_all_on_stream(456)
-    assert loaded == ["/installed/_pyshmem.so"]
-    assert barrier.argtypes == [distributed.ctypes.c_void_p]
-    assert barrier.restype is None
     assert fake.events[-2:] == [("stream_barrier", 123), ("stream_barrier", 456)]
     runtime.finalize()
-    assert runtime._stream_barrier is None
+
+
+@pytest.mark.parametrize("transport", ["rdma", "udma"])
+@pytest.mark.parametrize("stage", ["attr", "qp", "init"])
+@pytest.mark.parametrize("status", [-1, -6, -9])
+def test_uid_initialization_failure_keeps_runtime_uninitialized(monkeypatch, transport, stage, status):
+    distributed = _load_distributed()
+    fake = FakeShmem()
+    setattr(fake, f"{stage}_status", status)
+    monkeypatch.setitem(sys.modules, "shmem", fake)
+    runtime = distributed.ShmemRuntime(b"uid", 0, 2, 4096, transport=transport)
+    message = {"attr": "attribute setup", "qp": "QP configuration", "init": "initialization"}[stage]
+    with pytest.raises(distributed.ShmemRuntimeError, match=f"{message} failed with status {status}"):
+        runtime.initialize()
+    assert not runtime._initialized and runtime._shmem is None
+    assert [event[0] for event in fake.events] == {
+        "attr": ["set_attr"],
+        "qp": ["set_attr", "set_qp_num"],
+        "init": ["set_attr", "set_qp_num", "init_attr"],
+    }[stage]

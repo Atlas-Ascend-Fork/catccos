@@ -1,3 +1,11 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 // RUN: %tla_dist_compile %s -o - | %filecheck %s --implicit-check-not=tla_dist.
 
 !tile0 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 4>>
@@ -8,10 +16,8 @@ module {
     %ub_ptr = tla.alloc_ptr{size_bytes = 512} -> !tla.ptr<f32, ub, 256>
     "tla.vector"() ({
       %scratch = tla.make_tensor_like %ub_ptr like %src layoutTag(<RowMajor>) : !tla.ptr<f32, ub, 256>, !tile0 -> !tile1
-      %copy_submit_0 = tla.flag "copy_submit_0" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 0 : i64} -> !tla.flag
-      tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_0 {mode = "get", transport = "mte"} : !tile0, !tile0, i32, !tile1, !tla.flag
-      %copy_submit_1 = tla.flag "copy_submit_1" {src_pipe = #tla.pipe<mte2>, dst_pipe = #tla.pipe<mte3>, id = 1 : i64} -> !tla.flag
-      tla_dist.remote_copy %dst, %src, %peer, %scratch, %copy_submit_1 {mode = "get", transport = "mte", atomic_add} : !tile0, !tile0, i32, !tile1, !tla.flag
+      tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 0 : i32, mode = "get", transport = "mte"} : !tile0, !tile0, i32, i32, !tile1
+      tla_dist.remote_copy %dst, %src, %peer, %peer, %scratch {event_id = 1 : i32, mode = "get", transport = "mte", atomic_add} : !tile0, !tile0, i32, i32, !tile1
       tla_dist.barrier_all
     }) : () -> ()
     tla.return

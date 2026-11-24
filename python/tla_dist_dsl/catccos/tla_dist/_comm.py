@@ -1,3 +1,11 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
 """Internal builders for communication operations in the ``tla_dist`` dialect."""
 
 from __future__ import annotations
@@ -9,7 +17,7 @@ from catlass import runtime as _runtime
 from catlass._mlir import ir as mlir_ir  # type: ignore[import-not-found]
 from catlass.base_dsl.op import dsl_user_op
 from catlass.base_dsl.typing import Numeric
-from catlass.core_api import FlagLike, IndexLike
+from catlass.core_api import IndexLike
 from catlass.execution_lowering import TlaLoweringError
 from catlass.params import AtomicMode
 from catlass.tla.typing import Tensor
@@ -73,11 +81,50 @@ def _tensor_descriptor(value: mlir_ir.Value) -> Any | None:
         return None
 
 
+def _build_scratch_operands(
+    operation_name: str,
+    required: bool,
+    ub_tensor: Tensor | None,
+    event_id: int | None,
+    element_type: Any | None = None,
+) -> list[mlir_ir.Value]:
+    if required and (ub_tensor is None or event_id is None):
+        raise TlaLoweringError(f"{operation_name} requires both a UB scratch tensor and event_id")
+    if not required and (ub_tensor is not None or event_id is not None):
+        raise TlaLoweringError(f"{operation_name}: this route does not accept ub_tensor or event_id")
+
+    operands = []
+    if ub_tensor is not None:
+        _core._require_category(operation_name, "ub_tensor", ub_tensor, "tensor", 3)
+        ub_value = _core._as_value(ub_tensor)
+        ub_desc = _tensor_descriptor(ub_value)
+        if ub_desc is None:
+            raise TlaLoweringError(f"{operation_name} requires a UB tensor descriptor")
+        if ub_desc.addrspace.lower() != "ub":
+            raise TlaLoweringError(f"{operation_name} requires its scratch tensor in UB")
+        if element_type is not None and str(ub_desc.element_type) != str(element_type):
+            raise TlaLoweringError(f"{operation_name} requires identical src/UB dtypes")
+        operands.append(ub_value)
+
+    return operands
+
+
+def _event_id_attr(operation_name: str, event_id: int) -> mlir_ir.IntegerAttr:
+    value = _core._resolve_bound_value(event_id)
+    if isinstance(value, Numeric) and type(value).is_integer:
+        value = value.value
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TlaLoweringError(f"{operation_name}: event_id must be a compile-time integer")
+    if not 0 <= value < 8:
+        raise TlaLoweringError(f"{operation_name}: event_id must be in range 0..7")
+    return mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), value)
+
+
 def _build_remote_copy(
     dst: Tensor,
     src: Tensor,
     ub_tensor: Tensor | None,
-    flag_value: FlagLike | None,
+    event_id: int | None,
     peer: IndexLike,
     params: CopyParams,
     loc: mlir_ir.Location | None,
@@ -132,48 +179,30 @@ def _build_remote_copy(
     if params.atomic_mode == AtomicMode.ADD and route[1] != "gm":
         raise TlaLoweringError(f"{operation_name}: atomic ADD requires a GM destination")
 
-    required_pair = None
-    if route == ("gm", "gm"):
-        required_pair = {
-            CopyTransport.MTE: ("mte2", "mte3"),
-            CopyTransport.RDMA: ("scalar", "mte3"),
-            CopyTransport.SDMA: ("mte3", "mte2"),
-            CopyTransport.UDMA: ("mte3", "scalar") if wqe_pipe == CopyWqePipe.MTE3 else None,
-        }[transport]
-    if required_pair is not None and (ub_tensor is None or flag_value is None):
-        raise TlaLoweringError(f"{operation_name} requires both a UB scratch tensor and flag_value")
-    if required_pair is None and (ub_tensor is not None or flag_value is not None):
-        raise TlaLoweringError(f"{operation_name}: this route does not accept ub_tensor or flag_value")
-
-    operands = [dst_value, src_value, _as_integer_value(peer, 32, loc=loc)]
-    if ub_tensor is not None:
-        _core._require_category(operation_name, "ub_tensor", ub_tensor, "tensor", 3)
-        ub_value = _core._as_value(ub_tensor)
-        ub_desc = _tensor_descriptor(ub_value)
-        if ub_desc is None:
-            raise TlaLoweringError(f"{operation_name} requires a UB tensor descriptor")
-        if ub_desc.addrspace.lower() != "ub":
-            raise TlaLoweringError(f"{operation_name} requires its scratch tensor in UB")
-        if transport == CopyTransport.MTE and str(ub_desc.element_type) != str(src_desc.element_type):
-            raise TlaLoweringError(f"{operation_name} requires identical src/UB dtypes")
-        flag = _core._as_value(flag_value)
-        if not isinstance(flag, mlir_ir.Value) or str(flag.type) != "!tla.flag":
-            raise TlaLoweringError(f"{operation_name}: flag_value must be a tla.flag value")
-        owner = flag.owner
-        if not isinstance(owner, mlir_ir.Operation) or owner.name != "tla.flag":
-            raise TlaLoweringError(f"{operation_name}: flag_value must be created by tla.flag")
-        event_id = int(mlir_ir.IntegerAttr(owner.attributes["id"]).value) if "id" in owner.attributes else -1
-        if not 0 <= event_id < 8:
-            raise TlaLoweringError(f"{operation_name}: flag_value requires an explicit id in [0, 8)")
-        actual_pair = tuple(str(owner.attributes[key]) for key in ("src_pipe", "dst_pipe"))
-        if actual_pair != tuple(f"#tla.pipe<{pipe}>" for pipe in required_pair):
-            raise TlaLoweringError(f"{operation_name}: flag_value must use {required_pair[0]} -> {required_pair[1]}")
-        operands.extend([ub_value, flag])
+    needs_scratch = route == ("gm", "gm") and not (transport == CopyTransport.UDMA and wqe_pipe == CopyWqePipe.S)
+    qp_idx = params.qp_idx if transport in (CopyTransport.RDMA, CopyTransport.UDMA) else 0
+    operands = [
+        dst_value,
+        src_value,
+        _as_integer_value(peer, 32, loc=loc),
+        _as_integer_value(qp_idx, 32, loc=loc),
+    ]
+    operands.extend(
+        _build_scratch_operands(
+            operation_name,
+            needs_scratch,
+            ub_tensor,
+            event_id,
+            src_desc.element_type if transport == CopyTransport.MTE else None,
+        )
+    )
 
     attributes: dict[str, mlir_ir.Attribute] = {
         "mode": mlir_ir.StringAttr.get(mode.value),
         "transport": mlir_ir.StringAttr.get(transport.value),
     }
+    if event_id is not None:
+        attributes["event_id"] = _event_id_attr(operation_name, event_id)
     if params.atomic_mode == AtomicMode.ADD:
         attributes["atomic_add"] = mlir_ir.UnitAttr.get()
     if wqe_pipe is not None:
@@ -194,26 +223,32 @@ def remote_copy(
     *,
     peer: IndexLike,
     ub_tensor: Tensor | None = None,
-    flag_value: FlagLike | None = None,
+    event_id: int | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> None:
     """Asynchronously copy a RowMajor FP32 tile to or from a symmetric peer.
 
-    Like ``tla.copy``, the third argument contains compile-time parameters.
+    The third argument contains copy parameters. ``qp_idx`` can be a runtime
+    DSL integer for RDMA/UDMA and is ignored by MTE.
     The defaults are MTE transport and no atomic accumulation. GET resolves
     ``src`` on ``peer``; PUT resolves ``dst`` on ``peer``. GM->GM requires an
     explicit ``CopyParams(mode="get")`` or ``CopyParams(mode="put")``.
 
-    GM->UB requires GET and UB->GM requires PUT, without scratch or a flag.
-    For GM<->UB, an unspecified mode (``None``) is inferred from the route;
-    an explicit mode that conflicts with the route raises an error.
-    GM->GM requires caller-owned UB scratch and an explicit ``tla.flag`` with
-    the transport's submission pipe direction. UDMA scalar publication uses
-    neither scratch nor a flag. Only MTE currently has device lowering.
+    GM->UB requires GET and UB->GM requires PUT, without scratch or an event
+    ID inside. For GM<->UB, an unspecified mode (``None``) is inferred from
+    the route; an explicit mode that conflicts with the route raises an error.
+    GM->GM requires caller-owned UB scratch and a compile-time ``event_id``
+    in 0..7. The compiler reserves this ID in every pipe direction used by
+    the operation. UDMA scalar publication uses neither scratch nor an event
+    ID. RDMA/UDMA require quiet before consuming results.
 
     Source and destination column strides must be provably 1. Row padding,
     dynamic shapes and dynamic row strides are supported. A dynamic column
     stride that cannot be proven to be 1 is rejected during device lowering.
+    RDMA/UDMA split contiguous segments into NBI requests: at most
+    UINT32_MAX // sizeof(float) elements for RDMA and 256 MiB / sizeof(float)
+    for UDMA. Contiguous tiles are merged before splitting; padded tiles
+    are split within each row. The caller waits for all requests with quiet.
 
     Return does not imply completion. The caller arranges completion waits,
     remote readiness and scratch reuse. MTE staging rows are padded to 32 B;
@@ -223,10 +258,47 @@ def remote_copy(
         dst,
         src,
         ub_tensor,
-        flag_value,
+        event_id,
         peer,
         CopyParams() if params is None else params,
         loc,
+    )
+
+
+@dsl_user_op
+def quiet(
+    params: CopyParams,
+    *,
+    peer: IndexLike,
+    ub_tensor: Tensor | None = None,
+    event_id: int | None = None,
+    loc: mlir_ir.Location | None = None,
+) -> None:
+    """Wait for earlier GET/PUT requests to peer on params.transport and params.qp_idx.
+
+    RDMA requires UB scratch and a compile-time event_id in 0..7. The compiler
+    reserves the ID in all synchronization directions used by the backend.
+    UDMA quiet accepts neither scratch nor event_id.
+    """
+    name = "tla_dist.quiet"
+    _core._require_frontend_state(name)
+    _runtime._require_enclosing_region(name, "vector")
+    if not isinstance(params, CopyParams):
+        raise TlaLoweringError(f"{name} requires tla_dist.params.CopyParams")
+    transport = params.transport
+    if transport not in (CopyTransport.RDMA, CopyTransport.UDMA):
+        raise TlaLoweringError(f"{name} requires rdma or udma transport")
+    transport = CopyTransport(transport)
+    operands = [_as_integer_value(peer, 32, loc=loc), _as_integer_value(params.qp_idx, 32, loc=loc)]
+    operands.extend(_build_scratch_operands(name, transport == CopyTransport.RDMA, ub_tensor, event_id))
+    attributes = {"transport": mlir_ir.StringAttr.get(transport.value)}
+    if event_id is not None:
+        attributes["event_id"] = _event_id_attr(name, event_id)
+    mlir_ir.Operation.create(
+        name,
+        operands=operands,
+        attributes=attributes,
+        loc=loc,
     )
 
 
@@ -238,4 +310,4 @@ def barrier_all(*, loc: mlir_ir.Location | None = None) -> None:
     mlir_ir.Operation.create("tla_dist.barrier_all", loc=loc)
 
 
-__all__ = ["barrier_all", "remote_copy"]
+__all__ = ["barrier_all", "quiet", "remote_copy"]
