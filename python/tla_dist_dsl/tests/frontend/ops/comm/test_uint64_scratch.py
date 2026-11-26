@@ -18,6 +18,7 @@ pytest.importorskip("catlass._mlir.ir")
 from catccos import tla_dist
 from catlass import core_api, tla
 from catlass.execution_lowering import TlaLoweringError
+from catlass.runtime import TlaCoreAPIError
 
 
 def _construct(*, builder, dtype=tla.UInt64, space=tla.AddressSpace.ub, compute_copy=False):
@@ -75,5 +76,5 @@ def test_uint64_constructor_extension_keeps_other_types_and_spaces_rejected(buil
 
 @pytest.mark.parametrize("builder", ["make_tensor", "make_tensor_like"])
 def test_uint64_ub_constructor_does_not_enable_catlass_compute_copy(builder):
-    with pytest.raises(TlaLoweringError, match="unsupported copy route"):
+    with pytest.raises(TlaCoreAPIError, match="unsupported copy route"):
         assert _construct(builder=builder, compute_copy=True)
