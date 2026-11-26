@@ -10,9 +10,9 @@
 // RUN: sed 's/transport = "mte"/transport = "udma"/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SCOPE
 // RUN: sed 's/ui64/i64/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=TYPE
 // RUN: sed 's/ui64, ub/i64, ub/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SCRATCH
-// RUN: sed 's/!tla.stride<16,1>/!tla.stride<16,2>/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=STRIDE
-// RUN: sed 's/, %scratch {/ {/g;s/: !gm, !gm, i32, i32, !ub/: !gm, !gm, i32, i32/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=MISSING
-// RUN: sed 's/remote_copy %dst, %src, %peer, %peer, %scratch/remote_copy %scratch, %src, %peer, %peer/g;s/: !gm, !gm, i32, i32, !ub/: !ub, !gm, i32, i32/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SCOPE
+// RUN: sed 's/!tla.stride<16,1>/!tla.stride<32,2>/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=STRIDE
+// RUN: sed 's/, [%]scratch {/ {/g;s/: !gm, !gm, i32, i32, !ub/: !gm, !gm, i32, i32/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=MISSING
+// RUN: sed 's/remote_copy [%]dst, \([%]src, [%]peer, [%]peer\), \([%]scratch\)/remote_copy \2, \1/g;s/: !gm, !gm, i32, i32, !ub/: !ub, !gm, i32, i32/g' %S/uint64-mte.mlir | not %tla_dist_compile - -o - 2>&1 | %filecheck %s --check-prefix=SCOPE
 
 // SCOPE: 'tla_dist.remote_copy' op ui64 supports only non-atomic MTE GM -> GM copies
 // TYPE: 'tla_dist.remote_copy' op supports f32 tensors, or ui64 for non-atomic MTE GM -> GM copies
