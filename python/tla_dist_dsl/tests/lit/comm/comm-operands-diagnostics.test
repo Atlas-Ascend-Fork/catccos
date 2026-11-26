@@ -18,7 +18,7 @@
 // REMOTE-COPY-DTYPE: error: 'tla_dist.remote_copy' op requires identical src/dst element types
 // REMOTE-COPY-SCRATCH-SPACE: error: 'tla_dist.remote_copy' op requires its scratch tensor in UB
 // REMOTE-COPY-SCRATCH-DTYPE: error: 'tla_dist.remote_copy' op requires identical src and UB scratch element types
-// REMOTE-COPY-ELEMENT-TYPE: error: 'tla_dist.remote_copy' op currently supports only f32 tensors
+// REMOTE-COPY-ELEMENT-TYPE: error: 'tla_dist.remote_copy' op supports f32 tensors, or ui64 for non-atomic MTE GM -> GM copies
 
 // BEGIN_REMOTE-COPY-ROUTE
 // !tile0 = !tla.tensor<!tla.layout<!tla.shape<8,16>, !tla.stride<16,1>, !tla.shape<8,16>, RowMajor>, !tla.coord<0,0>, !tla.ptr<f32, gm, 256>>

@@ -40,6 +40,7 @@ testpaths = ["tests"]
 # Communication E2E files are standalone torchrun scripts.
 addopts = [
   "--ignore-glob=*/end_to_end/test_remote_copy_mte.py",
+  "--ignore-glob=*/end_to_end/test_remote_copy_uint64_mte.py",
   "--ignore-glob=*/end_to_end/test_remote_copy_rdma.py",
   "--ignore-glob=*/end_to_end/test_remote_copy_udma.py",
 ]

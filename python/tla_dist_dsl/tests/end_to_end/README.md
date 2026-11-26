@@ -1,13 +1,18 @@
 # Communication API end-to-end tests
 
 These tests compile CATCCOS DSL kernels, launch them on NPUs in Ascend 950PR&950DT products,
-and compare every rank's FP32 output with an exact CPU reference. No compiler,
+and compare every rank's output with an exact CPU reference. No compiler,
 device operation or SHMEM call is mocked.
 
 `test_remote_copy_mte.py`, `test_remote_copy_udma.py`, and
 `test_remote_copy_rdma.py` are standalone torchrun scripts. Each contains its own
 kernels, case enumeration, initialization, comparisons, and cleanup; none imports
 pytest or another test file.
+
+`test_remote_copy_uint64_mte.py` adds UINT64 MTE coverage and reuses the FP32
+MTE script's distributed initialization, launch and cleanup harness. Its own
+kernels and oracle operate on exact 64-bit patterns, independently of the FP32
+payload tests.
 
 Note: the MTE and UDMA example(i.e. `test_remote_copy_mte.py` and
 `test_remote_copy_udma.py`) need UB(Unified Bus) link between devices, can
@@ -109,6 +114,41 @@ torchrun --standalone --nproc-per-node=2 \
 
 Rank 0 prints RUN/PASS/FAIL and final counts.
 The first failed case stops the run with a nonzero status; resources are cleaned up.
+
+## UINT64 MTE GM→GM
+
+The UINT64 suite has eight cases: GET/PUT × aligned static, padded tail static,
+padded tail dynamic, and nonzero-offset dynamic geometries. Each kernel copies
+three different payload tiles through the same UB scratch with completion
+waits, including values above `2^63` and `2^64−1`. Comparisons cover the complete
+source and destination buffers, including prefix/suffix guards and row padding.
+Tile offsets and row strides use 8-byte elements; scratch rows are padded to
+four elements (32 B).
+
+The suite allocates symmetric Int64 storage because NPU unsigned arithmetic is
+not needed. It binds that storage with `from_dlpack(..., element_type=tla.UInt64)`
+and checks that the emitted frontend IR is `ui64`. CPU data generation and
+comparison preserve the original 64 bits without floating-point conversion.
+This storage view does not enable signed Int64 communication.
+
+```bash
+python tests/end_to_end/test_remote_copy_uint64_mte.py --list
+
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+ASCEND_RT_VISIBLE_DEVICES=0,1 TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+timeout --signal=TERM --kill-after=30s 420s \
+torchrun --standalone --nproc-per-node=2 \
+  tests/end_to_end/test_remote_copy_uint64_mte.py
+
+# Compile and link the same kernels without initializing SHMEM or an NPU.
+python tests/end_to_end/test_remote_copy_uint64_mte.py --compile-only
+```
+
+Repeat the device command in a fresh process to check initialization and
+finalization across runs. The UInt64 suite requires the same mixed AIC/AIV
+hardware barrier and UB-connected devices as the FP32 MTE suite. Keep the
+existing 27-case FP32 MTE suite as a separate regression run. Compile-only
+success does not establish device correctness.
 
 Large contiguous segments are split into NBI requests: RDMA uses at most
 `UINT32_MAX / sizeof(float)` elements per request (4 GiB minus 4 B), and UDMA

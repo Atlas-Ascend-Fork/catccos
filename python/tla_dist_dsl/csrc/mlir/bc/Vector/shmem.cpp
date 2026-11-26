@@ -162,6 +162,8 @@ extern "C" {
 
 REGISTER_SHMEM_REMOTE_COPY(get, Get, Mte, float)
 REGISTER_SHMEM_REMOTE_COPY(put, Put, Mte, float)
+REGISTER_SHMEM_REMOTE_COPY(get, Get, Mte, uint64_t)
+REGISTER_SHMEM_REMOTE_COPY(put, Put, Mte, uint64_t)
 
 #undef REGISTER_SHMEM_REMOTE_COPY
 

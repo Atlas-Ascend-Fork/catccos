@@ -325,12 +325,74 @@ def test_invalid_operands_are_rejected(kwargs, message):
         assert _ir(params=tla_dist.params.CopyParams(mode="get"), **kwargs)
 
 
-@pytest.mark.parametrize("dtype", [tla.Float16, tla.BFloat16, tla.Int8, tla.Int16, tla.Int32])
-def test_only_fp32_data_is_supported(dtype):
-    with pytest.raises(TlaLoweringError, match="only f32"):
+@pytest.mark.parametrize("dtype", [tla.Float16, tla.BFloat16, tla.Int8, tla.Int16, tla.Int32, tla.Int64, tla.UInt32])
+def test_unsupported_payload_dtype_is_rejected(dtype):
+    with pytest.raises(TlaLoweringError, match="supports f32 tensors, or ui64"):
         assert _ir(
             params=tla_dist.params.CopyParams(mode="get"), src=_tensor(dtype), dst=_tensor(dtype), scratch_dtype=dtype
         )
+
+
+@pytest.mark.parametrize("mode", ["get", "put"])
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_uint64_mte_gm_to_gm(mode, dynamic):
+    source = _tensor(tla.UInt64, stride=(24, 1))
+    destination = _tensor(tla.UInt64, stride=(32, 1))
+    if dynamic:
+        source, destination = source.mark_layout_dynamic(), destination.mark_layout_dynamic()
+    line = _copy_line(
+        _ir(
+            src=source,
+            dst=destination,
+            scratch_dtype=tla.UInt64,
+            params=tla_dist.params.CopyParams(mode=mode),
+        )
+    )
+    assert line.count("!tla.ptr<ui64,") == 3
+    assert f'mode = "{mode}"' in line
+    assert 'transport = "mte"' in line
+    assert "event_id = 2 : i32" in line
+
+
+@pytest.mark.parametrize(
+    "params,src_space,dst_space",
+    [
+        (tla_dist.params.CopyParams(mode="get", transport="udma"), tla.AddressSpace.gm, tla.AddressSpace.gm),
+        (tla_dist.params.CopyParams(mode="put", transport="rdma"), tla.AddressSpace.gm, tla.AddressSpace.gm),
+        (tla_dist.params.CopyParams(mode="get", transport="sdma"), tla.AddressSpace.gm, tla.AddressSpace.gm),
+        (
+            tla_dist.params.CopyParams(mode="get", atomic_mode=tla.params.AtomicMode.ADD),
+            tla.AddressSpace.gm,
+            tla.AddressSpace.gm,
+        ),
+        (tla_dist.params.CopyParams(mode="get"), tla.AddressSpace.gm, tla.AddressSpace.ub),
+        (tla_dist.params.CopyParams(mode="put"), tla.AddressSpace.ub, tla.AddressSpace.gm),
+    ],
+)
+def test_uint64_rejects_unsupported_combinations(params, src_space, dst_space):
+    with pytest.raises(TlaLoweringError, match="ui64 supports only non-atomic MTE GM -> GM"):
+        _ir(
+            src=_tensor(tla.UInt64, src_space),
+            dst=_tensor(tla.UInt64, dst_space),
+            scratch_dtype=tla.UInt64,
+            params=params,
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs,message",
+    [
+        ({"dst": _tensor(tla.Int64)}, "identical src/dst"),
+        ({"scratch_dtype": tla.Int64}, "identical src/UB"),
+        ({"src": _tensor(tla.UInt64, stride=(32, 2))}, "src column stride of 1"),
+        ({"scratch": False, "event_id": None}, "requires both"),
+    ],
+)
+def test_uint64_retains_operand_contracts(kwargs, message):
+    operands = {"src": _tensor(tla.UInt64), "dst": _tensor(tla.UInt64), "scratch_dtype": tla.UInt64}
+    operands.update(kwargs)
+    with pytest.raises(TlaLoweringError, match=message):
+        _ir(params=tla_dist.params.CopyParams(mode="get"), **operands)
 
 
 @pytest.mark.parametrize("mode", ["get", "put"])

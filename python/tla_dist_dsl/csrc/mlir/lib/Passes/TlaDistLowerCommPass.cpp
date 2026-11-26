@@ -268,9 +268,14 @@ public:
                    failure();
         if (srcDesc.elementType != dstDesc.elementType)
             return operation->emitOpError("requires identical src/dst element types"), failure();
-        if (!srcDesc.elementType.isF32())
-            return operation->emitOpError("currently supports only f32 tensors"), failure();
         bool enableAtomicAdd = operation->hasAttr("atomic_add");
+        auto integerType = dyn_cast<IntegerType>(srcDesc.elementType);
+        bool isUInt64 = integerType && integerType.getWidth() == 64 && integerType.isUnsigned();
+        if (isUInt64 && (transport != "mte" || !gmToGm || enableAtomicAdd))
+            return operation->emitOpError("ui64 supports only non-atomic MTE GM -> GM copies"), failure();
+        if (!srcDesc.elementType.isF32() && !isUInt64)
+            return operation->emitOpError("supports f32 tensors, or ui64 for non-atomic MTE GM -> GM copies"),
+                   failure();
         if (enableAtomicAdd && (transport != "mte" || dstDesc.addrspace != "gm"))
             return operation->emitOpError("atomic ADD requires MTE and a GM destination"), failure();
 
@@ -301,7 +306,7 @@ public:
         std::string route = gmToGm ? "gm_row_major_to_gm_row_major" :
                             gmToUb ? "gm_row_major_to_ub_row_major" :
                                      "ub_row_major_to_gm_row_major";
-        std::string calleeName = "shmem_remote_" + mode.str() + "_" + route + "_float";
+        std::string calleeName = "shmem_remote_" + mode.str() + "_" + route + (isUInt64 ? "_uint64_t" : "_float");
 
         if (transport != "mte") {
             calleeName =

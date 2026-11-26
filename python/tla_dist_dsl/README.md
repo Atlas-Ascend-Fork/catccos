@@ -12,7 +12,10 @@ bitcode, compiler/launch adapter, and SHMEM host lifecycle. The communication
 surface consists of:
 
 - `remote_copy(dst, src, params=None, *, peer, ub_tensor=None, event_id=None)`:
-  asynchronously copy matching RowMajor FP32 tensors. GET resolves `src` on
+  asynchronously copy matching RowMajor FP32 tensors. UInt64 additionally
+  supports non-atomic MTE GM→GM GET/PUT with matching UInt64 UB scratch;
+  signed Int64, UInt64 GM↔UB, other transports and UInt64 atomic ADD are not
+  enabled. GET resolves `src` on
   the peer; PUT resolves `dst` on the peer. Source and destination column
   strides must be provably 1; row padding, dynamic shapes and dynamic row
   strides are supported. Dynamic column strides that cannot be proven to be
@@ -45,7 +48,7 @@ the caller waits for all submitted chunks through `quiet`.
 
 | Route / submission | UB scratch | Reserved directions for `event_id` |
 | --- | --- | --- |
-| MTE GM→GM | FP32 staging; rows padded to 32 B | MTE2→MTE3 |
+| MTE GM→GM | Matching FP32 or UInt64 staging; rows padded to 32 B | MTE2→MTE3 |
 | MTE GM↔UB | None | None |
 | RDMA GM→GM / quiet, XSCALE | 128 B control workspace | SCALAR→MTE3, MTE3→SCALAR |
 | RDMA GM→GM / quiet, HNS_1825 | 128 B control workspace | SCALAR→MTE3, MTE3→SCALAR, MTE2→SCALAR |
@@ -91,6 +94,10 @@ completion waits, scratch reuse, remote readiness and cross-rank visibility.
 The MTE GM→GM helper only synchronizes its internal MTE2→MTE3 staging edge;
 it does not allocate another event for the reverse direction or wait for
 the final store. For an 8×13 FP32 tile, staging needs 8×16×4 = 512 B.
+For UInt64, round each scratch row to a multiple of four 8-byte elements:
+an 8×13 tile needs 8×16×8 = 1024 B. The payload still contains 13 elements
+per row, and source/destination padding is not copied. GM offsets and row
+strides are in elements of the selected dtype.
 RDMA/UDMA callers use `quiet` before consuming GET results, reusing payload
 buffers, or notifying a PUT receiver.
 

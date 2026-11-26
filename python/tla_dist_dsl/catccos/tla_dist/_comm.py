@@ -174,8 +174,12 @@ def _build_remote_copy(
         # by communication lowering; a RowMajor tag alone is insufficient.
         if column_stride is not None and column_stride != 1:
             raise TlaLoweringError(f"{operation_name} requires {name} column stride of 1")
-    if str(src_desc.element_type) != "f32":
-        raise TlaLoweringError(f"{operation_name} currently supports only f32 tensors")
+    element_type = str(src_desc.element_type)
+    if element_type == "ui64":
+        if transport != CopyTransport.MTE or route != ("gm", "gm") or params.atomic_mode != AtomicMode.NONE:
+            raise TlaLoweringError(f"{operation_name}: ui64 supports only non-atomic MTE GM -> GM copies")
+    elif element_type != "f32":
+        raise TlaLoweringError(f"{operation_name} supports f32 tensors, or ui64 for non-atomic MTE GM -> GM copies")
     if params.atomic_mode == AtomicMode.ADD and route[1] != "gm":
         raise TlaLoweringError(f"{operation_name}: atomic ADD requires a GM destination")
 
@@ -226,7 +230,11 @@ def remote_copy(
     event_id: int | None = None,
     loc: mlir_ir.Location | None = None,
 ) -> None:
-    """Asynchronously copy a RowMajor FP32 tile to or from a symmetric peer.
+    """Asynchronously copy a RowMajor tile to or from a symmetric peer.
+
+    FP32 supports the routes below. UInt64 additionally supports non-atomic
+    MTE GM->GM GET/PUT with matching UInt64 UB scratch. Other UInt64 routes,
+    transports and atomic operations are rejected; signed Int64 is not enabled.
 
     The third argument contains copy parameters. ``qp_idx`` can be a runtime
     DSL integer for RDMA/UDMA and is ignored by MTE.
