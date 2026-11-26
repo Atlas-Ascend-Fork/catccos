@@ -39,8 +39,8 @@ def catlass_tree(tmp_path):
         capture_output=True,
         text=True,
     )
-    git(target, "sparse-checkout", "set", "--no-cone", "/" + MANIFEST["target"])
-    git(target, "checkout", "--detach", MANIFEST["catlass_revision"])
+    assert git(target, "sparse-checkout", "set", "--no-cone", "/" + MANIFEST["target"]) == ""
+    assert git(target, "checkout", "--detach", MANIFEST["catlass_revision"]) == ""
     return target
 
 
@@ -89,7 +89,7 @@ def test_patch_rejects_source_drift(catlass_tree):
 
 def test_patch_rejects_other_tracked_changes(catlass_tree):
     other = "python/tla_dsl/catlass/types.py"
-    git(catlass_tree, "sparse-checkout", "add", "/" + other)
+    assert git(catlass_tree, "sparse-checkout", "add", "/" + other) == ""
     target = catlass_tree / other
     target.write_bytes(target.read_bytes() + b"\n# unrelated local change\n")
     result = run_patch(catlass_tree)
@@ -100,7 +100,7 @@ def test_patch_rejects_other_tracked_changes(catlass_tree):
 
 def test_patch_rejects_wrong_catlass_revision(catlass_tree):
     parent = git(catlass_tree, "rev-parse", MANIFEST["catlass_revision"] + "^")
-    git(catlass_tree, "update-ref", "HEAD", parent)
+    assert git(catlass_tree, "update-ref", "HEAD", parent) == ""
     result = run_patch(catlass_tree)
     assert result.returncode == 1
     assert "Catlass revision mismatch" in result.stderr

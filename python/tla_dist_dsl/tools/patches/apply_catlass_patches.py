@@ -48,6 +48,11 @@ def tracked_changes(root: Path) -> list[str]:
     )
 
 
+def quiet_git(root: Path, *arguments: str) -> None:
+    if git(root, *arguments).strip():
+        raise ValueError(f"unexpected stdout from git {arguments[0]}")
+
+
 def apply_patch(catlass_root: Path, *, check: bool) -> dict:
     root = catlass_root.resolve(strict=True)
     if Path(git(root, "rev-parse", "--show-toplevel").decode().strip()).resolve() != root:
@@ -93,19 +98,19 @@ def apply_patch(catlass_root: Path, *, check: bool) -> dict:
         sandbox_target = sandbox / TARGET
         sandbox_target.parent.mkdir(parents=True)
         sandbox_target.write_bytes(original)
-        git(sandbox, "apply", "--check", "--whitespace=error-all", "--", str(patch_file))
-        git(sandbox, "apply", "--whitespace=error-all", "--", str(patch_file))
+        quiet_git(sandbox, "apply", "--check", "--whitespace=error-all", "--", str(patch_file))
+        quiet_git(sandbox, "apply", "--whitespace=error-all", "--", str(patch_file))
         if digest(sandbox_target.read_bytes()) != manifest["postimage_sha256"]:
             raise ValueError("Catlass patch result does not match the reviewed postimage")
 
     if source_hash == manifest["postimage_sha256"]:
-        git(root, "apply", "--reverse", "--check", "--", str(patch_file))
+        quiet_git(root, "apply", "--reverse", "--check", "--", str(patch_file))
         status = "already_applied"
     else:
-        git(root, "apply", "--check", "--whitespace=error-all", "--", str(patch_file))
+        quiet_git(root, "apply", "--check", "--whitespace=error-all", "--", str(patch_file))
         status = "needs_apply"
         if not check:
-            git(root, "apply", "--whitespace=error-all", "--", str(patch_file))
+            quiet_git(root, "apply", "--whitespace=error-all", "--", str(patch_file))
             status = "applied"
             source_hash = digest(target.read_bytes())
             if source_hash != manifest["postimage_sha256"]:
