@@ -175,7 +175,8 @@ def _build_remote_copy(
         if column_stride is not None and column_stride != 1:
             raise TlaLoweringError(f"{operation_name} requires {name} column stride of 1")
     element_type = str(src_desc.element_type)
-    if element_type == "ui64":
+    # Catlass descriptors use the Numeric token "u64"; its MLIR type is ui64.
+    if element_type == "u64":
         if transport != CopyTransport.MTE or route != ("gm", "gm") or params.atomic_mode != AtomicMode.NONE:
             raise TlaLoweringError(f"{operation_name}: ui64 supports only non-atomic MTE GM -> GM copies")
     elif element_type != "f32":

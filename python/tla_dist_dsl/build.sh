@@ -61,6 +61,8 @@ pybind11_cmake_arg="$(python -c 'import shlex, sys; print(shlex.quote("-Dpybind1
 # on the same AscendNPU-IR tree when the shared-root override is provided.
 export CATLASS_DSL_ASCENDNPU_IR_ROOT="${CATLASS_DSL_ASCENDNPU_IR_ROOT:-${CATLASS_DSL_PREBUILT_ASCENDNPU_IR:-${catlass_tla_root}/3rdparty/AscendNPU-IR}}"
 export CATLASS_DSL_ASCENDNPU_IR_INSTALL_DIR="${CATLASS_DSL_ASCENDNPU_IR_INSTALL_DIR:-${CATLASS_DSL_ASCENDNPU_IR_ROOT}/build/install}"
+python "${tla_dist_root}/tools/patches/apply_catlass_patches.py" \
+  --catlass-root "${catccos_root}/3rdparty/catlass"
 echo "==> Building pinned Catlass native type bridge"
 CMAKE_ARGS="${CMAKE_ARGS:-} ${pybind11_cmake_arg}" \
 PIP_NO_BUILD_ISOLATION="${PIP_NO_BUILD_ISOLATION:-false}" \

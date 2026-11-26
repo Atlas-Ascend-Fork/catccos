@@ -371,7 +371,7 @@ def test_uint64_mte_gm_to_gm(mode, dynamic):
 )
 def test_uint64_rejects_unsupported_combinations(params, src_space, dst_space):
     with pytest.raises(TlaLoweringError, match="ui64 supports only non-atomic MTE GM -> GM"):
-        _ir(
+        assert _ir(
             src=_tensor(tla.UInt64, src_space),
             dst=_tensor(tla.UInt64, dst_space),
             scratch_dtype=tla.UInt64,
@@ -392,7 +392,7 @@ def test_uint64_retains_operand_contracts(kwargs, message):
     operands = {"src": _tensor(tla.UInt64), "dst": _tensor(tla.UInt64), "scratch_dtype": tla.UInt64}
     operands.update(kwargs)
     with pytest.raises(TlaLoweringError, match=message):
-        _ir(params=tla_dist.params.CopyParams(mode="get"), **operands)
+        assert _ir(params=tla_dist.params.CopyParams(mode="get"), **operands)
 
 
 @pytest.mark.parametrize("mode", ["get", "put"])

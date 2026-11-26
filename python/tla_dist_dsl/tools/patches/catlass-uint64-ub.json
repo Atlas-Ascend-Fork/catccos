@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "dependency": "catlass",
+  "catlass_revision": "76946bb3feb6efef4efb204a74fff44196b73c14",
+  "target": "python/tla_dsl/catlass/core_api.py",
+  "patch_file": "catlass/uint64-ub-tensor.patch",
+  "preimage_sha256": "6d069abeba5a852aa9f5be52086af2f98e787312a60edd31371b989a0dabe1a0",
+  "postimage_sha256": "a769d59b37da3a7fee57988479e459bf01e9050af9d29278eefd7042d4ccea52",
+  "patch_sha256": "80a45ba0109cef6d8f4813b5a2b3d0d5211f9dd62561376748d55cfc34b33122"
+}

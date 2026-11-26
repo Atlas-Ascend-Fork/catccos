@@ -1,0 +1,25 @@
+diff --git a/python/tla_dsl/catlass/core_api.py b/python/tla_dsl/catlass/core_api.py
+--- a/python/tla_dsl/catlass/core_api.py
++++ b/python/tla_dsl/catlass/core_api.py
+@@ -4715,7 +4715,9 @@
+         raise TlaLoweringError(
+             f"tla.make_tensor cannot derive element type from ptr pointee {ptr_ty.pointee}"
+         ) from exc
+-    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES:
++    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES and not (
++        dtype == "u64" and ptr_ty.addrspace == "ub"
++    ):
+         raise TlaLoweringError(
+             f"tla.make_tensor expects a supported element type, got [{dtype}]"
+         )
+@@ -4902,7 +4904,9 @@
+             "tla.make_tensor_like cannot derive element type from ptr pointee "
+             f"{ptr_ty.pointee}"
+         ) from exc
+-    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES:
++    if dtype not in _MAKE_TENSOR_SUPPORTED_ELEMENT_TYPES and not (
++        dtype == "u64" and ptr_ty.addrspace == "ub"
++    ):
+         raise TlaLoweringError(
+             f"tla.make_tensor_like expects a supported element type, got [{dtype}]"
+         )

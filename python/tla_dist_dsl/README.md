@@ -123,6 +123,16 @@ Use the Catlass and SHMEM revisions pinned by this repository, and the
 AscendNPU-IR revision pinned by Catlass. Any prebuilt AscendNPU-IR
 installation must match that pinned revision.
 
+`build.sh` applies the reviewed [Catlass UInt64 UB constructor source patch](tools/patches/README.md)
+before building Catlass. The gitlink remains pinned; the patch only permits
+UInt64 UB tensor construction for communication scratch, without enabling
+signed Int64, other address spaces, arithmetic, or Catlass local-copy routes.
+The patch helper validates the pinned revision, patch SHA256, exact source
+before/after hashes, and absence of unrelated tracked changes. It is
+idempotent; incompatible source or patch drift stops the build. Record the
+Catlass revision together with the emitted patch and source hashes when
+reporting a build or device-test result.
+
 SHMEM device headers, Python package and runtime library must use the same
 revision; build/install the pinned SHMEM package using its own instructions.
 NPU execution also requires compatible PyTorch and `torch_npu` installations.
