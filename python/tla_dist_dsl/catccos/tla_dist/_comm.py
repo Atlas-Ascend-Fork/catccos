@@ -18,7 +18,7 @@ from catlass import core_api as _core
 from catlass import runtime as _runtime
 from catlass._mlir import ir as mlir_ir  # type: ignore[import-not-found]
 from catlass.base_dsl.op import dsl_user_op
-from catlass.base_dsl.typing import Numeric, Pointer
+from catlass.base_dsl.typing import Int32, Numeric, Pointer
 from catlass.core_api import IndexLike
 from catlass.execution_lowering import TlaLoweringError
 from catlass.params import AtomicMode
@@ -371,7 +371,7 @@ def _index32(name: str, value: Any, *, minimum: int, loc: Any) -> mlir_ir.Value:
     original = _core._resolve_bound_value(value)
     if isinstance(original, bool):
         raise TlaLoweringError(f"{name} requires an integer, got bool")
-    if isinstance(original, Numeric) and (not type(original).is_integer or type(original).width > 32):
+    if isinstance(original, Numeric) and (not type(original).is_integer or type(original).width > 32 or type(original).width == 1):
         raise TlaLoweringError(f"{name} requires Index or an integer no wider than 32 bits")
     resolved, _ = _resolve_integer(original)
     if isinstance(resolved, int):
@@ -475,7 +475,7 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
 
 
 @dsl_user_op
-def signal(flag: Tensor, value: Any, *, peer: IndexLike, op: SignalOp = SignalOp.SET,
+def signal(flag: Tensor, value: int | Int32, *, peer: IndexLike, op: SignalOp = SignalOp.SET,
            loc: mlir_ir.Location | None = None) -> None:
     """Publish Int32 SET or MTE ADD to the peer's corresponding symmetric slot."""
     name = "tla_dist.signal"

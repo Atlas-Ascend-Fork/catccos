@@ -31,7 +31,7 @@ bool excludesDefaultOwner(Value condition, bool thenRegion) {
     if (!cmp) return false;
     auto isIndex = [](Value v) {
         auto* def = v.getDefiningOp();
-        return def && (def->getName().getStringRef() == "tla.block_idx" || def->getName().getStringRef() == "tla.sub_block_idx");
+        return def && (def->getName().getStringRef() == "tla.arch.block_idx" || def->getName().getStringRef() == "tla.arch.sub_block_idx");
     };
     APInt value;
     if (!isIndex(cmp.getLhs()) || !matchPattern(cmp.getRhs(), m_ConstantInt(&value))) return false;

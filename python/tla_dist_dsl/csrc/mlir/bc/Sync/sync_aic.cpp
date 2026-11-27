@@ -5,12 +5,12 @@
 #error "MIX AIC synchronization requires MIX headers"
 #endif
 extern "C" {
-__aicore__ void tla_dist_local_sync_mix_aic() { AscendC::SyncAll<false>(); }
-__aicore__ void tla_dist_sync_mix_aic(int32_t team) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_mix_aic() { AscendC::SyncAll<false>(); }
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_mix_aic(int32_t team) {
     if (team == -1) return;
     AscendC::SyncAll<false>(); AscendC::SyncAll<false>();
 }
-__aicore__ void tla_dist_barrier_mix_aic(int32_t team) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_mix_aic(int32_t team) {
     if (team == -1) return;
     AscendC::SyncAll<false>(); AscendC::SyncAll<false>();
 }

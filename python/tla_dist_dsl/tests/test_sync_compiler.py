@@ -15,7 +15,9 @@ from frontend.ops.comm.test_sync import slot, DTYPES
 def wait_kernel(counter: tla.Tensor, threshold, mode: tla.Constexpr[str]):
     if tla.const_expr(mode=="mix"):
         with tla.cube(): tla.pipe_barrier(tla.pipes.ALL)
-    with tla.vector(): tla_dist.wait_until(counter,threshold,cmp=CompareOp.GE)
+    with tla.vector():
+        tla_dist.wait_until(counter,threshold,cmp=CompareOp.GE)
+        if tla.const_expr(mode=="mix_aiv"): tla_dist.local_sync()
 
 @tla.kernel
 def collective_kernel(mode: tla.Constexpr[str], op: tla.Constexpr[str]):
@@ -25,6 +27,7 @@ def collective_kernel(mode: tla.Constexpr[str], op: tla.Constexpr[str]):
         if tla.const_expr(mode!="mix"):
             if tla.const_expr(op=="local"): tla_dist.local_sync()
             elif tla.const_expr(op=="sync"): tla_dist.sync()
+            elif tla.const_expr(op=="invalid"): tla_dist.barrier(team=-1)
             else: tla_dist.barrier()
     if tla.const_expr(mode=="mix"):
         if tla.const_expr(op=="local"): tla_dist.local_sync(scope=CoreScope.MIX)
@@ -53,21 +56,12 @@ def lower(tmp_path,text,flags=()):
 
 
 @pytest.mark.parametrize("dtype",DTYPES)
-@pytest.mark.parametrize("mode",["aiv","mix","mixed-types"])
+@pytest.mark.parametrize("mode",["aiv","mix","mix_aiv"])
 def test_sync_kernel_links(tmp_path,dtype,mode):
     require_native()
     if _execution._find_hivmc_a5() is None: pytest.skip("configure CANN for device linkage")
-    # mixed-types retains a distinct cache candidate with a second wait dtype.
-    if mode=="mixed-types":
-        @tla.kernel
-        def kernel(counter:tla.Tensor,other:tla.Tensor,value):
-            with tla.vector():
-                tla_dist.wait_until(counter,value)
-                tla_dist.wait_until(other,1)
-        artifact=tla_dist.compile(kernel,type_args=(slot(dtype),slot(tla.Int32),dtype(1)),cache_dir=tmp_path)
-    else:
-        artifact=tla_dist.compile(wait_kernel,type_args=(slot(dtype),dtype(1),mode),
-            arch_scope="aic.c310" if mode=="mix" else "aiv.c310",cache_dir=tmp_path)
+    artifact=tla_dist.compile(wait_kernel,type_args=(slot(dtype),dtype(1),mode),
+        arch_scope="aic.c310" if mode=="mix" else "aiv.c310",cache_dir=tmp_path)
     assert artifact.kernel_binary_path.is_file()
     assert "tla_dist_wait_" in artifact.__mlir__
 
@@ -121,7 +115,7 @@ def test_collective_dynamic_control_rejected(tmp_path):
     def kernel(value:tla.Int32):
         with tla.vector():
             if value==0: tla_dist.local_sync()
-    result=lower(tmp_path,kernel.dump_mlir(type_args=(tla.Int32,)))
+    result=lower(tmp_path,kernel.dump_mlir(type_args=(tla.Int32(0),)))
     assert result.returncode!=0
     assert "dynamic if/while" in result.stderr
 
@@ -164,3 +158,17 @@ def test_static_ub_overflow_is_rejected(tmp_path):
     result=lower(tmp_path,kernel.dump_mlir(type_args=()))
     assert result.returncode!=0
     assert "188 KiB" in result.stderr
+
+
+def test_mixed_wait_types_share_one_kernel(tmp_path):
+    require_native()
+    if _execution._find_hivmc_a5() is None: pytest.skip("configure CANN for device linkage")
+    @tla.kernel
+    def kernel(counter:tla.Tensor,other:tla.Tensor,value:tla.UInt64):
+        with tla.vector():
+            tla_dist.wait_until(counter,value)
+            tla_dist.wait_until(other,1)
+    artifact=tla_dist.compile(kernel,type_args=(slot(tla.UInt64),slot(tla.Int32),tla.UInt64(1)),cache_dir=tmp_path)
+    assert artifact.kernel_binary_path.is_file()
+    assert "tla_dist_wait_u64" in artifact.__mlir__
+    assert "tla_dist_wait_i32" in artifact.__mlir__

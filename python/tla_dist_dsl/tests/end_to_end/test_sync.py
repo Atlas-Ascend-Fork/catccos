@@ -168,7 +168,8 @@ def ub_guard(flag:tla.Tensor,observed:tla.Tensor,peer:tla.Int32):
 
 
 def manifest():
-    for blocks in (1,2,4,8): yield f"p0/vector-local/blocks-{blocks}", ("collective","aiv-local",0,blocks)
+    for blocks in (1,2,4): yield f"p0/vector-local/blocks-{blocks}", ("collective","aiv-local",0,blocks)
+    yield "p0/vector-local/resident-limit", ("collective","aiv-local",0,0)
     for scope in ("aiv","mix"):
         for kind in ("local","sync","barrier"):
             yield f"collective/{scope}-{kind}", ("collective",f"{scope}-{kind}",0,2)
@@ -187,7 +188,7 @@ def manifest():
     yield "signal/set", ("signal",False,1)
     yield "signal/add", ("signal",True,1)
     yield "signal/add-multiwriter", ("signal",True,4)
-    yield "ordering/publication-epoch-ack", ("publication",8)
+    yield "ordering/publication-epoch-ack", ("publication",100)
     yield "ordering/default-fence-quiet", ("default",)
     yield "resource/user-ub-guards", ("ub-guard",)
 
@@ -259,6 +260,9 @@ def _run(runtime,item,*,local_only=False):
     if item[0]=="wait": return _wait(runtime,item[1])
     if item[0]=="collective":
         _,case,team,blocks=item
+        if blocks==0:
+            from catccos.tla_dist._sync_runtime import resident_block_limit
+            blocks=resident_block_limit(int(os.environ["LOCAL_RANK"]),paired=False)
         observed=torch.zeros((1,128),dtype=torch.int32,device=f"npu:{os.environ['LOCAL_RANK']}")
         args=(_view(observed),case,tla.Int32(team))
         artifact=_compile(runtime,collective,args,mixed=case.startswith("mix"))

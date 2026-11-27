@@ -277,7 +277,7 @@ CATLASS_DEVICE int tlaDistCompare(int code) {
 }
 }
 extern "C" {
-CATLASS_DEVICE void tla_dist_local_sync_aiv() {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_aiv() {
 #ifdef __CCE_AICORE_ENABLE_MIX__
     AscendC::SyncAll<true>();
 #else
@@ -285,31 +285,31 @@ CATLASS_DEVICE void tla_dist_local_sync_aiv() {
     trap();
 #endif
 }
-CATLASS_DEVICE void tla_dist_sync_aiv(int32_t team) { if (team != -1) aclshmem_sync(team); }
-CATLASS_DEVICE void tla_dist_barrier_aiv(int32_t team) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_aiv(int32_t team) { if (team != -1) aclshmem_sync(team); }
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_aiv(int32_t team) {
     if (team == -1) return;
     tlaDistCompleteLocal(); aclshmem_barrier(team);
 }
 #ifdef __CCE_AICORE_ENABLE_MIX__
-CATLASS_DEVICE void tla_dist_local_sync_mix_aiv() { AscendC::SyncAll<false>(); }
-CATLASS_DEVICE void tla_dist_sync_mix_aiv(int32_t team) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_mix_aiv() { AscendC::SyncAll<false>(); }
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_mix_aiv(int32_t team) {
     if (team == -1) return;
     AscendC::SyncAll<false>(); aclshmem_sync(team); AscendC::SyncAll<false>();
 }
-CATLASS_DEVICE void tla_dist_barrier_mix_aiv(int32_t team) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_mix_aiv(int32_t team) {
     if (team == -1) return;
     tlaDistCompleteLocal(); AscendC::SyncAll<false>(); aclshmem_barrier(team); AscendC::SyncAll<false>();
 }
 #endif
-CATLASS_DEVICE void tla_dist_quiet_default() {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_quiet_default() {
     if (!tlaDistDefaultOwner()) { trap(); return; }
     aclshmem_quiet();
 }
-CATLASS_DEVICE void tla_dist_fence() {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_fence() {
     if (!tlaDistDefaultOwner()) { trap(); return; }
     aclshmem_fence();
 }
-CATLASS_DEVICE void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op, int32_t peer) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op, int32_t peer) {
     // ADD requires a directly mapped peer. SET may enter RoCE only on the
     // unique flat AIV0 owner. aclshmem_ptr is the public topology check.
     bool mapped = aclshmem_ptr(reinterpret_cast<__gm__ void*>(addr), peer) != nullptr;
@@ -325,7 +325,7 @@ CATLASS_DEVICE void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op
 // Small-integer thresholds use a 64-bit C ABI, avoiding target-specific
 // signext/zeroext attributes. UInt64 never passes through a signed value.
 #define TLA_DIST_WAIT(NAME, BACKEND, TYPE, ABI) \
-CATLASS_DEVICE void tla_dist_wait_##NAME(uint64_t addr, ABI value, int32_t cmp) { \
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_wait_##NAME(uint64_t addr, ABI value, int32_t cmp) { \
     aclshmem_##BACKEND##_wait_until(reinterpret_cast<__gm__ TYPE*>(addr), tlaDistCompare(cmp), static_cast<TYPE>(value)); \
 }
 TLA_DIST_WAIT(i8, int8, int8_t, int64_t)
