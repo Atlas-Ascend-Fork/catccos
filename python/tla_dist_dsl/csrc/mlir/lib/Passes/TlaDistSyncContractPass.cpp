@@ -10,6 +10,7 @@
 
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringMap.h"
 using namespace mlir;
 namespace tla_dist {
 namespace {
@@ -19,6 +20,26 @@ bool resources(Operation* op) { return isa<SyncOp, BarrierOp, QuietDefaultOp, Fe
 bool inRegion(Operation* op, StringRef name) {
     for (Operation* p = op->getParentOp(); p; p = p->getParentOp())
         if (p->getName().getStringRef() == name) return true;
+    return false;
+}
+// Diagnose visibly non-owner paths; arbitrary dynamic ownership remains a
+// runtime contract. MTE signal writers are deliberately exempt.
+bool excludesDefaultOwner(Value condition, bool thenRegion) {
+    if (auto both = condition.getDefiningOp<arith::AndIOp>())
+        return thenRegion && (excludesDefaultOwner(both.getLhs(), true) || excludesDefaultOwner(both.getRhs(), true));
+    auto cmp = condition.getDefiningOp<arith::CmpIOp>();
+    if (!cmp) return false;
+    auto isIndex = [](Value v) {
+        auto* def = v.getDefiningOp();
+        return def && (def->getName().getStringRef() == "tla.block_idx" || def->getName().getStringRef() == "tla.sub_block_idx");
+    };
+    APInt value;
+    if (!isIndex(cmp.getLhs()) || !matchPattern(cmp.getRhs(), m_ConstantInt(&value))) return false;
+    auto predicate = cmp.getPredicate();
+    if (predicate == arith::CmpIPredicate::eq) return thenRegion ? value != 0 : value == 0;
+    if (predicate == arith::CmpIPredicate::ne) return thenRegion ? value == 0 : value != 0;
+    if (predicate == arith::CmpIPredicate::sgt || predicate == arith::CmpIPredicate::ugt)
+        return thenRegion && value.isNonNegative();
     return false;
 }
 class ValidateSyncContractPass final : public PassWrapper<ValidateSyncContractPass, OperationPass<ModuleOp>> {
@@ -32,6 +53,16 @@ public:
             if (!collective && !isa<SignalOp, WaitUntilOp, QuietDefaultOp, FenceOp>(op)) return WalkResult::advance();
             auto fail = [&](StringRef message) { op->emitOpError(message); return WalkResult::interrupt(); };
             if (inRegion(op, "tla.vec.func")) return fail("synchronization requires SIMD, not SIMT");
+            if (isa<QuietDefaultOp, FenceOp>(op)) {
+                Operation* child = op;
+                for (Operation* parent = op->getParentOp(); parent; child = parent, parent = parent->getParentOp()) {
+                    if (auto branch = dyn_cast<scf::IfOp>(parent)) {
+                        bool thenRegion = child->getParentRegion() == &branch.getThenRegion();
+                        if (excludesDefaultOwner(branch.getCondition(), thenRegion))
+                            return fail("default network quiet/fence requires flat AIV0 owner");
+                    }
+                }
+            }
             bool vector = inRegion(op, "tla.vector");
             bool mix = collective && cast<CoreScopeAttr>(op->getAttr("scope")).getValue() == CoreScope::MIX;
             if (!mix && !vector) return fail("AIV synchronization requires a tla.vector region");
@@ -120,12 +151,30 @@ public:
     void runOnOperation() override {
         llvm::DenseMap<int64_t, std::pair<Operation*, Operation*>> pairs;
         bool invalid = false;
+        llvm::StringMap<std::pair<SmallVector<int64_t>, SmallVector<int64_t>>> sequences;
         getOperation().walk([&](Operation* op) {
             auto id = op->getAttrOfType<IntegerAttr>("tla_dist.sync_point");
             if (!id) return;
             auto core = op->getParentOfType<func::FuncOp>()->getAttrOfType<hivm::TFuncCoreTypeAttr>(hivm::TFuncCoreTypeAttr::name);
             if (!core || (core.getFuncCoreType() != hivm::TFuncCoreType::AIC && core.getFuncCoreType() != hivm::TFuncCoreType::AIV)) {
                 op->emitOpError("MIX synchronization point was not split"); invalid = true; return;
+            }
+            auto function = op->getParentOfType<func::FuncOp>();
+            auto symbol = function.getSymName();
+            bool cube = core.getFuncCoreType() == hivm::TFuncCoreType::AIC;
+            StringRef base = symbol;
+            base.consume_back(cube ? "_mix_aic" : "_mix_aiv");
+            auto& sequence = sequences[base];
+            auto& sideSequence = cube ? sequence.first : sequence.second;
+            sideSequence.push_back(id.getInt());
+            for (Operation* parent = op->getParentOp(); parent != function.getOperation(); parent = parent->getParentOp()) {
+                if (auto loop = dyn_cast<scf::ForOp>(parent)) {
+                    for (Value bound : {loop.getLowerBound(), loop.getUpperBound(), loop.getStep()}) {
+                        APInt constant;
+                        if (!matchPattern(bound, m_ConstantInt(&constant))) { invalid = true; break; }
+                        sideSequence.push_back(constant.getSExtValue());
+                    }
+                }
             }
             auto& pair = pairs[id.getInt()];
             auto& side = core.getFuncCoreType() == hivm::TFuncCoreType::AIC ? pair.first : pair.second;
@@ -138,6 +187,12 @@ public:
                 (aic ? aic : aiv)->emitOpError("MIX synchronization point missing AIC or AIV side"); invalid = true;
             } else if (aic->getName() != aiv->getName() || aic->getAttr("scope") != aiv->getAttr("scope")) {
                 aic->emitOpError("MIX synchronization sides do not match"); invalid = true;
+            }
+        }
+        for (const auto& entry : sequences) {
+            if (entry.second.first != entry.second.second) {
+                getOperation().emitOpError("MIX synchronization order/control structure differs between AIC and AIV");
+                invalid = true;
             }
         }
         if (invalid) signalPassFailure();
