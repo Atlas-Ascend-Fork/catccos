@@ -44,4 +44,5 @@ addopts = [
   "--ignore-glob=*/end_to_end/test_remote_copy_udma.py",
   "--ignore-glob=*/end_to_end/test_shmem_ptr.py",
   "--ignore-glob=*/end_to_end/test_sync.py",
+  "--ignore-glob=*/end_to_end/test_sync_udma.py",
 ]

@@ -8,10 +8,13 @@ uses neither remote_copy nor the cancelled UInt64 copy implementation.
 # ruff: noqa: BLE001
 import argparse
 import fnmatch
+import hashlib
+import json
 import operator
 import os
 import struct
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from catccos import tla_dist  # isort: skip
 from catlass import core_api as _core
@@ -349,6 +352,7 @@ def publication(
     rank: tla.Int32,
     rounds: tla.Constexpr[int],
     mixed: tla.Constexpr[bool],
+    transport: tla.Constexpr[str] = "mte",
 ):
     scratch = tla.make_tensor(
         tla.allocate(5 * 16, tla.Float32, tla.AddressSpace.ub, 32),
@@ -378,16 +382,27 @@ def publication(
         with tla.vector():
             if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
                 backend_delay((rank + 1) * 100000 + (epoch % 3) * 10000)
-                tla_dist.remote_copy(
-                    destination,
-                    src,
-                    tla_dist.params.CopyParams(mode="put"),
-                    peer=peer,
-                    ub_tensor=scratch,
-                    event_id=2,
-                )
-                tla.set_flag(complete)
-                tla.wait_flag(complete)
+                if tla.const_expr(transport == "udma"):
+                    tla_dist.remote_copy(
+                        destination,
+                        src,
+                        tla_dist.params.CopyParams(
+                            mode="put", transport="udma", wqe_pipe="s"
+                        ),
+                        peer=peer,
+                    )
+                    tla_dist.quiet()
+                else:
+                    tla_dist.remote_copy(
+                        destination,
+                        src,
+                        tla_dist.params.CopyParams(mode="put"),
+                        peer=peer,
+                        ub_tensor=scratch,
+                        event_id=2,
+                    )
+                    tla.set_flag(complete)
+                    tla.wait_flag(complete)
                 tla_dist.signal(ready, epoch, peer=peer)
                 tla_dist.wait_until(ready, epoch)
                 tla.copy(scratch, destination)
@@ -540,9 +555,39 @@ def _check_cube(runtime, result):
     )
 
 
+def _evidence(runtime, kind, record):
+    root = os.environ.get("VQR_SYNC_EVIDENCE_DIR")
+    if not root:
+        return
+    directory = Path(root).expanduser().resolve() / f"rank{runtime.rank}"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / (kind + ".jsonl")).open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def _artifact_record(artifact):
+    path = artifact.kernel_binary_path.resolve()
+    return {
+        "binary": str(path),
+        "binary_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "artifact_dir": str(artifact.artifacts.cache_dir.resolve()),
+        "cache_key": artifact.cache_key,
+        "logical_entrypoint": artifact.entrypoint,
+        "kernel_mode": artifact.kernel_mode,
+        "is_mixed": artifact.jit_module.is_mixed,
+    }
+
+
 def _compile(runtime, kernel, args, *, mixed=False):
     artifact, error = None, None
     try:
+        if os.environ.get("VQR_SYNC_EVIDENCE_DIR"):
+            runtime.cache_dir = (
+                Path(os.environ["VQR_SYNC_EVIDENCE_DIR"]).expanduser().resolve()
+                / f"rank{runtime.rank}"
+                / "cache"
+            )
+            runtime.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact = tla_dist.compile(
             kernel,
             *args,
@@ -552,6 +597,7 @@ def _compile(runtime, kernel, args, *, mixed=False):
     except Exception as exc:
         error = f"compile: {type(exc).__name__}: {exc}"
     runtime.check_errors(error)
+    _evidence(runtime, "compiled", _artifact_record(artifact))
     return artifact
 
 
@@ -569,6 +615,17 @@ def _launch(runtime, artifact, args, blocks, *, local_only=False, ub=None):
     except Exception as exc:
         error = f"launch: {type(exc).__name__}: {exc}"
     runtime.check_errors(error)
+    if not local_only or runtime.rank == 0:
+        record = _artifact_record(artifact)
+        record.update(
+            {
+                "blocks": blocks,
+                "requested_dynamic_ub": ub,
+                "device": int(os.environ["LOCAL_RANK"]),
+                "launch_returned_and_synchronized": True,
+            }
+        )
+        _evidence(runtime, "launched", record)
 
 
 def _wait(runtime, case):
@@ -838,80 +895,84 @@ def _run(runtime, item, *, local_only=False):
         return 2
 
     else:
-        rounds = item[1]
-        payload = runtime.shmem.symmetric_tensor((14, 32), torch.float32)
-        flag = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
-        ack = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
-        sentinel = -1024.0
-        try:
-            for mixed in (False, True):
-                payload.fill_(sentinel)
-                flag.fill_(-17)
-                ack.fill_(-17)
-                flag[:, 16] = 0
-                flag[:, 32] = 0
-                ack[:, 16] = 0
-                ack[:, 32] = 0
-                expected_source = torch.full(
-                    (rounds * 7 + 2, 32), sentinel, dtype=torch.float32
+        return _publication(runtime, transport="mte")
+
+
+def _publication(runtime, *, transport):
+    torch = runtime.torch
+    rounds = 100
+    payload = runtime.shmem.symmetric_tensor((14, 32), torch.float32)
+    flag = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
+    ack = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
+    sentinel = -1024.0
+    try:
+        for mixed in (False, True):
+            payload.fill_(sentinel)
+            flag.fill_(-17)
+            ack.fill_(-17)
+            flag[:, 16] = 0
+            flag[:, 32] = 0
+            ack[:, 16] = 0
+            ack[:, 32] = 0
+            expected_source = torch.full(
+                (rounds * 7 + 2, 32), sentinel, dtype=torch.float32
+            )
+            expected_output = torch.full_like(expected_source, sentinel)
+            expected_payload = torch.full((14, 32), sentinel, dtype=torch.float32)
+            for epoch in range(1, rounds + 1):
+                values = (
+                    torch.arange(65, dtype=torch.float32).reshape(5, 13)
+                    + runtime.rank * 1048576
+                    + epoch * 256
                 )
-                expected_output = torch.full_like(expected_source, sentinel)
-                expected_payload = torch.full((14, 32), sentinel, dtype=torch.float32)
-                for epoch in range(1, rounds + 1):
-                    values = (
-                        torch.arange(65, dtype=torch.float32).reshape(5, 13)
-                        + runtime.rank * 1048576
-                        + epoch * 256
-                    )
-                    remote_values = (
-                        torch.arange(65, dtype=torch.float32).reshape(5, 13)
-                        + (1 - runtime.rank) * 1048576
-                        + epoch * 256
-                    )
-                    row = (epoch - 1) * 7 + 1
-                    expected_source[row : row + 5, 8:21] = values
-                    expected_output[row : row + 5, 8:21] = remote_values
-                    slot = (epoch - 1) % 2
-                    expected_payload[slot * 7 + 1 : slot * 7 + 6, 8:21] = remote_values
-                source = expected_source.to(payload.device)
-                output = torch.full_like(source, sentinel)
-                lhs, rhs, cube_result = _cube_inputs(runtime, 2)
-                args = tuple(
-                    _view(t)
-                    for t in (
-                        payload[:, 8:],
-                        source[:, 8:],
-                        flag[:, 16:],
-                        ack[:, 16:],
-                        output[:, 8:],
-                        lhs,
-                        rhs,
-                        cube_result,
-                    )
-                ) + (
-                    tla.Int32(1 - runtime.rank),
-                    tla.Int32(runtime.rank),
-                    rounds,
-                    mixed,
+                remote_values = (
+                    torch.arange(65, dtype=torch.float32).reshape(5, 13)
+                    + (1 - runtime.rank) * 1048576
+                    + epoch * 256
                 )
-                artifact = _compile(runtime, publication, args, mixed=mixed)
-                _launch(runtime, artifact, args[:-2], 2)
-                runtime.assert_equal(output, expected_output)
-                runtime.assert_equal(source, expected_source)
-                runtime.assert_equal(payload, expected_payload)
-                expected_flag = torch.full((1, 64), -17, dtype=torch.int32)
-                for slot in (0, 1):
-                    expected_flag[0, 16 + slot * 16] = rounds - (
-                        (rounds - 1 - slot) % 2
-                    )
-                runtime.assert_equal(flag, expected_flag)
-                runtime.assert_equal(ack, expected_flag)
-                if mixed:
-                    _check_cube(runtime, cube_result)
-        finally:
-            for tensor in (ack, flag, payload):
-                runtime.shmem.free(tensor)
-        return 2
+                row = (epoch - 1) * 7 + 1
+                expected_source[row : row + 5, 8:21] = values
+                expected_output[row : row + 5, 8:21] = remote_values
+                slot = (epoch - 1) % 2
+                expected_payload[slot * 7 + 1 : slot * 7 + 6, 8:21] = remote_values
+            source = expected_source.to(payload.device)
+            output = torch.full_like(source, sentinel)
+            lhs, rhs, cube_result = _cube_inputs(runtime, 2)
+            args = tuple(
+                _view(t)
+                for t in (
+                    payload[:, 8:],
+                    source[:, 8:],
+                    flag[:, 16:],
+                    ack[:, 16:],
+                    output[:, 8:],
+                    lhs,
+                    rhs,
+                    cube_result,
+                )
+            ) + (
+                tla.Int32(1 - runtime.rank),
+                tla.Int32(runtime.rank),
+                rounds,
+                mixed,
+                transport,
+            )
+            artifact = _compile(runtime, publication, args, mixed=mixed)
+            _launch(runtime, artifact, args[:-3], 2)
+            runtime.assert_equal(output, expected_output)
+            runtime.assert_equal(source, expected_source)
+            runtime.assert_equal(payload, expected_payload)
+            expected_flag = torch.full((1, 64), -17, dtype=torch.int32)
+            for slot in (0, 1):
+                expected_flag[0, 16 + slot * 16] = rounds - ((rounds - 1 - slot) % 2)
+            runtime.assert_equal(flag, expected_flag)
+            runtime.assert_equal(ack, expected_flag)
+            if mixed:
+                _check_cube(runtime, cube_result)
+    finally:
+        for tensor in (ack, flag, payload):
+            runtime.shmem.free(tensor)
+    return 2
 
 
 def main():

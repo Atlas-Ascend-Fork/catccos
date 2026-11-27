@@ -336,6 +336,7 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
             tla.Int32(0),
             100,
             mixed,
+            "mte",
         )
         kernel = acceptance.publication
     else:

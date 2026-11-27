@@ -375,3 +375,24 @@ offsets, local-only rank-0 launches, multiple AIV writers and an epoch/ack
 publication chain. Use an external timeout and serialize device jobs. Native
 linkage/frontend checks establish compilation contracts; actual NPU results,
 team-subset and network-specific tests remain separate acceptance evidence.
+
+
+For local UDMA acceptance, build SHMEM with relay disabled and use the matching
+runtime with two QPs. The shared synchronization fixtures exercise QP0 NBI
+GET/PUT followed by default quiet, all-AIV local completion plus collective
+barrier, delivery ordering through a UDMA Float32 control PUT, and explicit QP1
+quiet before default-domain reuse. The 100-round publication case transfers its
+payload through UDMA, completes it with default quiet, then notifies through MTE
+on a directly mapped peer; it does not provide a UDMA signal API.
+
+```bash
+python tests/end_to_end/test_sync_udma.py --list
+torchrun --standalone --nproc-per-node=2 tests/end_to_end/test_sync_udma.py
+```
+
+Set `VQR_SYNC_EVIDENCE_DIR` to a dedicated candidate/job directory to retain each
+rank's exact kernel cache, ELF, lowering input and compile/launch JSONL records.
+The records include binary hashes and requested launch blocks/UB after successful
+launch and synchronization. Without this variable, the runners retain their
+normal temporary-cache behavior. A cache or launch record alone is not an
+independent device verdict; compare the data and participation results as well.
