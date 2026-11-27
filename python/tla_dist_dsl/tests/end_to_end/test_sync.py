@@ -296,9 +296,10 @@ def collective(
     case: tla.Constexpr[str],
     team: tla.Int32,
 ):
+    fused_aiv = tla.const_expr(case.startswith("fused"))
     if tla.const_expr(case.startswith(("mix", "fused"))):
         cube_work(lhs, rhs, cube_result)
-    if tla.const_expr(case.startswith("fused")):
+    if tla.const_expr(fused_aiv):
         with tla.cube():
             if tla.arch.block_idx() == 0:
                 backend_await_started(_address(done.ptr))
@@ -330,19 +331,39 @@ def collective(
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
             observed[0, 0] = 3
-            if tla.const_expr(case.startswith("fused")):
+            if tla.const_expr(fused_aiv):
                 backend_write(_address(done.ptr), tla.Int64(1), 2, 0)
 
 
 @tla.kernel
-def signal_case(flag: tla.Tensor, peer: tla.Int32, value: tla.Int32, add: tla.Constexpr[bool]):
-    slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
+def signal_case(
+    flag: tla.Tensor,
+    lhs: tla.Tensor,
+    rhs: tla.Tensor,
+    cube_result: tla.Tensor,
+    peer: tla.Int32,
+    value: tla.Int32,
+    add: tla.Constexpr[bool],
+    multi_set: tla.Constexpr[bool],
+    mixed: tla.Constexpr[bool],
+):
+    if tla.const_expr(mixed):
+        cube_work(lhs, rhs, cube_result)
     with tla.vector():
-        if tla.const_expr(add):
-            tla_dist.signal(slot, value, peer=peer, op=SignalOp.ADD)
+        if tla.const_expr(mixed):
+            flat = tla.arch.block_idx() * 2 + tla.arch.sub_block_idx()
         else:
-            if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
-                tla_dist.signal(slot, value, peer=peer)
+            flat = tla.arch.block_idx()
+        if tla.const_expr(multi_set):
+            slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, flat * 16))
+            tla_dist.signal(slot, value + flat, peer=peer, op=SignalOp.SET)
+        else:
+            slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
+            if tla.const_expr(add):
+                tla_dist.signal(slot, value, peer=peer, op=SignalOp.ADD)
+            else:
+                if flat == 0:
+                    tla_dist.signal(slot, value, peer=peer)
         tla_dist.barrier()
 
 
@@ -533,6 +554,7 @@ def manifest():
     yield "signal/set", ("signal", False, 1)
     yield "signal/add", ("signal", True, 1)
     yield "signal/add-multiwriter", ("signal", True, 4)
+    yield "signal/set-multiwriter", ("signal", False, 4, True)
     yield "ordering/publication-epoch-ack", ("publication", 100)
     yield "ordering/default-fence-quiet", ("default",)
     yield "resource/user-ub-guards", ("ub-guard",)
@@ -804,18 +826,57 @@ def _run(runtime, item, *, local_only=False):
             else f"participant markers {actual}"
         )
     elif item[0] == "signal":
-        _, add, blocks = item
-        flag = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
-        try:
-            flag.zero_()
-            args = (_view(flag), tla.Int32(1 - runtime.rank), tla.Int32(3), add)
-            artifact = _compile(runtime, signal_case, args)
-            _launch(runtime, artifact, args[:-1], blocks)
-            runtime.check_errors(
-                None if flag.cpu()[0, 0].item() == 3 * (blocks if add else 1) else "signal result mismatch"
-            )
-        finally:
-            runtime.shmem.free(flag)
+        _, add, blocks, *extra = item
+        multi_set = bool(extra)
+        launches = 0
+        for mixed in (False, True) if multi_set else (False,):
+            writers = blocks * (2 if mixed else 1)
+            flag = runtime.shmem.symmetric_tensor((1, (writers + 2) * 16 if multi_set else 16), torch.int32)
+            try:
+                sentinel = -197
+                flag.fill_(sentinel) if multi_set else flag.zero_()
+                if multi_set:
+                    runtime.check_errors(
+                        None
+                        if flag.data_ptr() % 64 == 0
+                        else "SET test requires cacheline-aligned symmetric allocation"
+                    )
+                    for writer in range(writers):
+                        flag[0, (writer + 1) * 16] = 0
+                lhs, rhs, cube_result = _cube_inputs(runtime, blocks)
+                args = tuple(_view(t) for t in (flag[:, 16:] if multi_set else flag, lhs, rhs, cube_result)) + (
+                    tla.Int32(1 - runtime.rank),
+                    tla.Int32(3),
+                    add,
+                    multi_set,
+                    mixed,
+                )
+                artifact = _compile(runtime, signal_case, args, mixed=mixed)
+                _launch(runtime, artifact, args[:-3], blocks)
+                launches += 1
+                actual = flag.cpu()[0]
+                error = None
+                if multi_set:
+                    # The whole 64-byte line belongs to its SET writer. Only
+                    # the Int32 signal word is specified inside that line;
+                    # prefix/suffix lines are independent outer guards.
+                    if (
+                        actual[:16].tolist() != [sentinel] * 16
+                        or actual[(writers + 1) * 16 :].tolist() != [sentinel] * 16
+                    ):
+                        error = "multiwriter SET crossed its outer cacheline guards"
+                    if [actual[(writer + 1) * 16].item() for writer in range(writers)] != [
+                        3 + writer for writer in range(writers)
+                    ]:
+                        error = "multiwriter SET slot/flat-AIV mapping mismatch"
+                elif actual[0].item() != 3 * (writers if add else 1):
+                    error = "signal result mismatch"
+                runtime.check_errors(error)
+                if mixed:
+                    _check_cube(runtime, cube_result)
+            finally:
+                runtime.shmem.free(flag)
+        return launches
     elif item[0] == "default":
         output = torch.zeros((1, 4), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}")
         args = (_view(output),)

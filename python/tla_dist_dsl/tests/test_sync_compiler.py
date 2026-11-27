@@ -272,6 +272,8 @@ def test_handwritten_ir_team_upper_bound_rejected(tmp_path):
         "publication-mix",
         "static-ub",
         "dynamic-ub",
+        "signal-set-multiwriter-aiv",
+        "signal-set-multiwriter-mix",
     ],
 )
 def test_acceptance_fixture_kernel_links(tmp_path, case):
@@ -324,6 +326,9 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
             tla.Int32(0),
         )
         kernel = acceptance.collective
+    elif case.startswith("signal-set-multiwriter"):
+        args = (fake(tla.Int32, (1, 144)), lhs, rhs, cube, tla.Int32(1), tla.Int32(3), False, True, mixed)
+        kernel = acceptance.signal_case
     elif case.startswith("publication"):
         args = (
             fake(tla.Float32, (14, 24), (32, 1)),

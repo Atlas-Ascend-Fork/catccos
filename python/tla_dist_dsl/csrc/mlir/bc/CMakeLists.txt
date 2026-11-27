@@ -198,6 +198,7 @@ if(BISHENGIR_BUILD_TEMPLATE)
       tla_dist_linked_aiv_bitcode
       tla_dist_linked_mix_aiv_bitcode
       tla_dist_linked_mix_aic_bitcode
+      "${_tla_dist_linked_mix_aic}"
       "${_tla_dist_base_aic}"
       "${_tla_dist_linked_aiv}"
       "${TLA_DIST_AIV_BITCODE}"
