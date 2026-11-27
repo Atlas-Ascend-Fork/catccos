@@ -572,14 +572,24 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
             raise TlaLoweringError(
                 f"{name}: threshold outside {dtype} range [{low}, {high}]"
             )
-    if dtype == "u64" and value >= 2**63:
-        # MLIR's Python binding takes a signed int64 argument. Construct the
-        # identical 64 bits in ui64 storage; no arithmetic signed conversion.
-        ty = scalar_type.mlir_type()
-        return mlir_ir.Operation.create(
+    if dtype.startswith("u"):
+        # arith.constant requires signless integers. Preserve the bits there,
+        # then restore the descriptor's unsigned type through a bit-preserving
+        # bridge cast. The lowering normalizes this cast before arithmetic.
+        width = int(dtype[1:])
+        unsigned_type = scalar_type.mlir_type()
+        storage_type = mlir_ir.IntegerType.get_signless(width)
+        bits = value - 2**width if value >= 2 ** (width - 1) else value
+        constant = mlir_ir.Operation.create(
             "arith.constant",
-            results=[ty],
-            attributes={"value": mlir_ir.IntegerAttr.get(ty, value - 2**64)},
+            results=[storage_type],
+            attributes={"value": mlir_ir.IntegerAttr.get(storage_type, bits)},
+            loc=loc,
+        ).results[0]
+        return mlir_ir.Operation.create(
+            "builtin.unrealized_conversion_cast",
+            operands=[constant],
+            results=[unsigned_type],
             loc=loc,
         ).results[0]
     return scalar_type(value).ir_value()

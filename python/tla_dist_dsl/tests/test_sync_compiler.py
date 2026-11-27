@@ -307,7 +307,7 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
             tla.Int32(0),
             tla.Int32(1),
             tla.Int32(3),
-            tla.UInt64(7),
+            tla.Int64(7),
             tla.Int32(1000),
             acceptance.WaitCase(dtype.__name__, mixed=mixed, column=column),
         )
@@ -355,3 +355,24 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
             "hivm.hir.mmad" in artifact.artifacts.LLVM
             or "mmad" in artifact.artifacts.LLVM
         )
+
+
+@pytest.mark.parametrize(
+    "dtype,value",
+    [
+        (tla.UInt8, 255),
+        (tla.UInt16, 65535),
+        (tla.UInt32, 2**32 - 1),
+        (tla.UInt64, 2**63),
+        (tla.UInt64, 2**64 - 1),
+    ],
+)
+def test_unsigned_literal_thresholds_parse_and_lower(tmp_path, dtype, value):
+    from frontend.ops.comm.test_sync import wait_ir
+
+    result = lower(tmp_path, wait_ir(dtype, value))
+    assert result.returncode == 0, result.stderr
+    assert f"tla_dist_wait_u{dtype.width}" in result.stdout
+    assert "arith.constant" not in result.stdout or ": ui" not in "\n".join(
+        line for line in result.stdout.splitlines() if "arith.constant" in line
+    )

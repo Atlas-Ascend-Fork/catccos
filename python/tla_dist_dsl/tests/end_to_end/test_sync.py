@@ -111,7 +111,7 @@ extern "C" __aicore__ void sync_test_await_started(uint64_t addr) {
 @tla.extern(source=WRITER_SOURCE, name="sync_test_write")
 def backend_write(
     ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm],
-    bits: tla.UInt64,
+    bits: tla.Int64,
     tag: tla.Int32,
     delay: tla.Int32,
 ) -> None: ...
@@ -197,7 +197,7 @@ def typed_wait(
     producer: tla.Int32,
     peer: tla.Int32,
     index: tla.Int32,
-    bits: tla.UInt64,
+    bits: tla.Int64,
     delay: tla.Int32,
     case: tla.Constexpr[WaitCase],
 ):
@@ -227,11 +227,11 @@ def typed_wait(
                         p8 = tla_dist.shmem_ptr(counter8.ptr, peer)
                         pf = tla_dist.shmem_ptr(counterf.ptr, peer)
                         backend_write(
-                            tla.recast_ptr(p8, dtype=tla.UInt8), tla.UInt64(249), 0, 0
+                            tla.recast_ptr(p8, dtype=tla.UInt8), tla.Int64(249), 0, 0
                         )
                         backend_write(
                             tla.recast_ptr(pf, dtype=tla.UInt8),
-                            tla.UInt64(1067450368),
+                            tla.Int64(1067450368),
                             8,
                             0,
                         )
@@ -239,7 +239,7 @@ def typed_wait(
                 if delay >= 0:
                     entered = tla_dist.shmem_ptr(started.ptr, peer)
                     backend_write(
-                        tla.recast_ptr(entered, dtype=tla.UInt8), tla.UInt64(1), 2, 0
+                        tla.recast_ptr(entered, dtype=tla.UInt8), tla.Int64(1), 2, 0
                     )
                 tla_dist.wait_until(counter_slot, case.threshold, cmp=case.cmp)
                 backend_observe(
@@ -281,7 +281,7 @@ def collective(
             flat = tla.arch.block_idx()
         backend_write(
             tla.recast_ptr(observed.ptr + (flat + 2) * 16, dtype=tla.UInt8),
-            tla.UInt64(1),
+            tla.Int64(1),
             2,
             0,
         )
@@ -398,45 +398,45 @@ def default_ordering(observed: tla.Tensor):
 
 @tla.kernel
 def ub_guard(flag: tla.Tensor, observed: tla.Tensor, peer: tla.Int32):
-    ptr = tla.allocate(188 * 1024, tla.UInt8, tla.AddressSpace.ub, 32)
+    ptr = tla.allocate(188 * 1024 // 4, tla.Int32, tla.AddressSpace.ub, 32)
     storage = tla.make_tensor(
         ptr,
         tla.make_layout(
-            tla.make_shape(1, 188 * 1024),
-            tla.make_stride(188 * 1024, 1),
+            tla.make_shape(1, 188 * 1024 // 4),
+            tla.make_stride(188 * 1024 // 4, 1),
             layoutTag=tla.arch.RowMajor,
         ),
     )
     slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
-            storage[0, 0] = tla.UInt8(17)
-            storage[0, 188 * 1024 - 1] = tla.UInt8(29)
+            storage[0, 0] = tla.Int32(17)
+            storage[0, 188 * 1024 // 4 - 1] = tla.Int32(29)
             tla_dist.signal(slot, 1, peer=peer, op=SignalOp.ADD)
             observed[0, 0] = tla.Int32(storage[0, 0])
-            observed[0, 1] = tla.Int32(storage[0, 188 * 1024 - 1])
+            observed[0, 1] = tla.Int32(storage[0, 188 * 1024 // 4 - 1])
         tla_dist.barrier()
 
 
 @tla.kernel
 def dynamic_ub_guard(flag: tla.Tensor, observed: tla.Tensor, peer: tla.Int32):
-    ptr = tla.arch.get_dyn_ub(tla.UInt8, byte_alignment=32)
+    ptr = tla.arch.get_dyn_ub(tla.Int32, byte_alignment=32)
     storage = tla.make_tensor(
         ptr,
         tla.make_layout(
-            tla.make_shape(1, 188 * 1024),
-            tla.make_stride(188 * 1024, 1),
+            tla.make_shape(1, 188 * 1024 // 4),
+            tla.make_stride(188 * 1024 // 4, 1),
             layoutTag=tla.arch.RowMajor,
         ),
     )
     slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
-            storage[0, 0] = tla.UInt8(17)
-            storage[0, 188 * 1024 - 1] = tla.UInt8(29)
+            storage[0, 0] = tla.Int32(17)
+            storage[0, 188 * 1024 // 4 - 1] = tla.Int32(29)
             tla_dist.signal(slot, 1, peer=peer, op=SignalOp.ADD)
             observed[0, 0] = tla.Int32(storage[0, 0])
-            observed[0, 1] = tla.Int32(storage[0, 188 * 1024 - 1])
+            observed[0, 1] = tla.Int32(storage[0, 188 * 1024 // 4 - 1])
         tla_dist.barrier()
 
 
@@ -651,7 +651,7 @@ def _wait(runtime, case):
                                 tla.Int32(producer),
                                 tla.Int32(1 - runtime.rank),
                                 tla.Int32(index),
-                                tla.UInt64(bits),
+                                tla.Int64(bits if bits < 2**63 else bits - 2**64),
                                 tla.Int32(1000000 if delayed else -1),
                             )
                             if artifact is None:
