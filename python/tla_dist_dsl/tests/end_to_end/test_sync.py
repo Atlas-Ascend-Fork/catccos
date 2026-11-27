@@ -93,6 +93,9 @@ extern "C" __aicore__ void sync_test_observe(uint64_t addr, uint64_t out, int32_
 // Independent test fixture: publish entry into the typed wait before the
 // producer starts its bounded delay. This prevents a late receiver launch
 // from turning a broken early-return wait into an accidental passing trial.
+extern "C" __aicore__ void sync_test_delay(int32_t delay) {
+    for (int i=0;i<delay;++i) { __asm__ __volatile__("" ::: "memory"); }
+}
 extern "C" __aicore__ void sync_test_await_started(uint64_t addr) {
     AscendC::GlobalTensor<int32_t> started;
     started.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(addr));
@@ -126,6 +129,46 @@ def backend_observe(
 def backend_await_started(ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm]) -> None: ...
 
 
+@tla.extern(source=WRITER_SOURCE, name="sync_test_delay")
+def backend_delay(delay: tla.Int32) -> None: ...
+
+
+@tla.jit
+def cube_work(lhs: tla.Tensor, rhs: tla.Tensor, result: tla.Tensor):
+    l1_ready = tla.flag("sync_cube_l1", tla.arch.MTE2, tla.arch.MTE1, id=2)
+    l0_ready = tla.flag("sync_cube_l0", tla.arch.MTE1, tla.arch.CUBE, id=2)
+    product_ready = tla.flag("sync_cube_product", tla.arch.CUBE, tla.arch.FIX, id=2)
+    stored = tla.flag("sync_cube_stored", tla.arch.FIX, tla.arch.MTE2, id=2)
+    l1a = tla.allocate(256, tla.Float16, tla.AddressSpace.l1, 512)
+    l1b = tla.allocate(256, tla.Float16, tla.AddressSpace.l1, 512)
+    l0a = tla.allocate(256, tla.Float16, tla.AddressSpace.l0a, 512)
+    l0b = tla.allocate(256, tla.Float16, tla.AddressSpace.l0b, 512)
+    l0c = tla.allocate(256, tla.Float32, tla.AddressSpace.l0c, 512)
+    with tla.cube():
+        out = tla.tile_view(
+            result, tla.make_shape(16, 16), tla.make_coord(tla.arch.block_idx(), 0)
+        )
+        a = tla.make_tensor_like(l1a, lhs, tla.arch.zN)
+        b = tla.make_tensor_like(l1b, rhs, tla.arch.zN)
+        tla.copy(a, lhs)
+        tla.copy(b, rhs)
+        tla.set_flag(l1_ready)
+        tla.wait_flag(l1_ready)
+        a0 = tla.make_tensor_like(l0a, a, tla.arch.zN)
+        b0 = tla.make_tensor_like(l0b, b, tla.arch.nZ)
+        c0 = tla.make_tensor_like(l0c, out, tla.arch.L0Clayout)
+        tla.copy(a0, a)
+        tla.copy(b0, b)
+        tla.set_flag(l0_ready)
+        tla.wait_flag(l0_ready)
+        tla.mmad(c0, a0, b0, init_c=True)
+        tla.set_flag(product_ready)
+        tla.wait_flag(product_ready)
+        tla.copy(out, c0)
+        tla.set_flag(stored)
+        tla.wait_flag(stored)
+
+
 @dataclass(frozen=True)
 class WaitCase:
     dtype: str
@@ -136,6 +179,7 @@ class WaitCase:
     mixed: bool = False
     offset: bool = False
     rank1: bool = False
+    column: bool = False
 
 
 @tla.kernel
@@ -144,6 +188,11 @@ def typed_wait(
     observed: tla.Tensor,
     snapshot: tla.Tensor,
     started: tla.Tensor,
+    counter8: tla.Tensor,
+    counterf: tla.Tensor,
+    lhs: tla.Tensor,
+    rhs: tla.Tensor,
+    cube_result: tla.Tensor,
     rank: tla.Int32,
     producer: tla.Int32,
     peer: tla.Int32,
@@ -153,10 +202,9 @@ def typed_wait(
     case: tla.Constexpr[WaitCase],
 ):
     if tla.const_expr(case.mixed):
-        with tla.cube():
-            # Actual independent cube-side progress is observable after launch.
-            if tla.arch.block_idx() == 0:
-                observed[0, 16] = 2
+        cube_work(lhs, rhs, cube_result)
+    slot8 = tla.tile_view(counter8, tla.make_shape(1, 1), tla.make_coord(0, 0))
+    slotf = tla.tile_view(counterf, tla.make_shape(1, 1), tla.make_coord(0, 0))
     if tla.const_expr(case.rank1):
         counter_slot = tla.tile_view(counter, tla.make_shape(1), tla.make_coord(index))
     else:
@@ -175,6 +223,18 @@ def typed_wait(
                         tuple(DTYPES).index(case.dtype),
                         delay,
                     )
+                    if tla.const_expr(case.mixed):
+                        p8 = tla_dist.shmem_ptr(counter8.ptr, peer)
+                        pf = tla_dist.shmem_ptr(counterf.ptr, peer)
+                        backend_write(
+                            tla.recast_ptr(p8, dtype=tla.UInt8), tla.UInt64(249), 0, 0
+                        )
+                        backend_write(
+                            tla.recast_ptr(pf, dtype=tla.UInt8),
+                            tla.UInt64(1067450368),
+                            8,
+                            0,
+                        )
             else:
                 if delay >= 0:
                     entered = tla_dist.shmem_ptr(started.ptr, peer)
@@ -187,15 +247,33 @@ def typed_wait(
                     snapshot.ptr,
                     tuple(DTYPES).index(case.dtype),
                 )
+                if tla.const_expr(case.mixed):
+                    tla_dist.wait_until(slot8, -7)
+                    backend_observe(
+                        tla.recast_ptr(counter8.ptr, dtype=tla.UInt8),
+                        snapshot.ptr + 16,
+                        0,
+                    )
+                    tla_dist.wait_until(slotf, 1.25)
+                    backend_observe(
+                        tla.recast_ptr(counterf.ptr, dtype=tla.UInt8),
+                        snapshot.ptr + 32,
+                        8,
+                    )
                 observed[0, 0] = 1
 
 
 @tla.kernel
-def collective(observed: tla.Tensor, case: tla.Constexpr[str], team: tla.Int32):
+def collective(
+    observed: tla.Tensor,
+    lhs: tla.Tensor,
+    rhs: tla.Tensor,
+    cube_result: tla.Tensor,
+    case: tla.Constexpr[str],
+    team: tla.Int32,
+):
     if tla.const_expr(case.startswith("mix")):
-        with tla.cube():
-            if tla.arch.block_idx() == 0:
-                observed[0, 16] = 2
+        cube_work(lhs, rhs, cube_result)
     with tla.vector():
         if tla.const_expr(case.startswith("mix")):
             flat = tla.arch.block_idx() * 2 + tla.arch.sub_block_idx()
@@ -247,50 +325,66 @@ def publication(
     flag: tla.Tensor,
     ack: tla.Tensor,
     output: tla.Tensor,
+    lhs: tla.Tensor,
+    rhs: tla.Tensor,
+    cube_result: tla.Tensor,
     peer: tla.Int32,
+    rank: tla.Int32,
     rounds: tla.Constexpr[int],
+    mixed: tla.Constexpr[bool],
 ):
     scratch = tla.make_tensor(
-        tla.allocate(16, tla.Float32, tla.AddressSpace.ub, 32),
+        tla.allocate(5 * 16, tla.Float32, tla.AddressSpace.ub, 32),
         tla.make_layout(
-            tla.make_shape(1, 16), tla.make_stride(16, 1), layoutTag=tla.arch.RowMajor
+            tla.make_shape(5, 16),
+            tla.make_stride(16, 1),
+            origin_shape=tla.make_shape(5, 13),
+            layoutTag=tla.arch.RowMajor,
         ),
     )
-    ready = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
-    acknowledged = tla.tile_view(ack, tla.make_shape(1, 1), tla.make_coord(0, 0))
-    completed = tla.flag("payload_complete", tla.arch.MTE3, tla.arch.MTE2, id=2)
-    submitted = tla.flag("payload_read", tla.arch.MTE2, tla.arch.MTE3, id=2)
-    with tla.vector():
-        for epoch in tla.range(1, rounds + 1):
+    complete = tla.flag("publication_complete", tla.arch.MTE3, tla.arch.MTE2, id=2)
+    loaded = tla.flag("publication_loaded", tla.arch.MTE2, tla.arch.MTE3, id=2)
+    layout = tla.make_layout(
+        tla.make_shape(5, 13), tla.make_stride(32, 1), layoutTag=tla.arch.RowMajor
+    )
+    if tla.const_expr(mixed):
+        cube_work(lhs, rhs, cube_result)
+    for epoch in tla.range(1, rounds + 1):
+        slot = (epoch - 1) % 2
+        ready = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, slot * 16))
+        acknowledged = tla.tile_view(
+            ack, tla.make_shape(1, 1), tla.make_coord(0, slot * 16)
+        )
+        destination = tla.make_tensor(payload.ptr + (slot * 7 + 1) * 32, layout)
+        src = tla.make_tensor(source.ptr + ((epoch - 1) * 7 + 1) * 32, layout)
+        out = tla.make_tensor(output.ptr + ((epoch - 1) * 7 + 1) * 32, layout)
+        with tla.vector():
             if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
-                row = tla.tile_view(
-                    source, tla.make_shape(1, 16), tla.make_coord(epoch - 1, 0)
-                )
+                backend_delay((rank + 1) * 100000 + (epoch % 3) * 10000)
                 tla_dist.remote_copy(
-                    payload,
-                    row,
+                    destination,
+                    src,
                     tla_dist.params.CopyParams(mode="put"),
                     peer=peer,
                     ub_tensor=scratch,
                     event_id=2,
                 )
-                tla.set_flag(completed)
-                tla.wait_flag(completed)
+                tla.set_flag(complete)
+                tla.wait_flag(complete)
                 tla_dist.signal(ready, epoch, peer=peer)
-                tla_dist.wait_until(ready, epoch, cmp=CompareOp.EQ)
-                # MTE2 starts only after wait. Its explicit completion precedes MTE3.
-                tla.copy(scratch, payload)
-                tla.set_flag(submitted)
-                tla.wait_flag(submitted)
-                out = tla.tile_view(
-                    output, tla.make_shape(1, 16), tla.make_coord(epoch - 1, 0)
-                )
+                tla_dist.wait_until(ready, epoch)
+                tla.copy(scratch, destination)
+                tla.set_flag(loaded)
+                tla.wait_flag(loaded)
                 tla.copy(out, scratch)
-                tla.set_flag(completed)
-                tla.wait_flag(completed)
+                tla.set_flag(complete)
+                tla.wait_flag(complete)
                 tla_dist.signal(acknowledged, epoch, peer=peer)
-                tla_dist.wait_until(acknowledged, epoch, cmp=CompareOp.EQ)
-            tla_dist.local_sync()
+                tla_dist.wait_until(acknowledged, epoch)
+            if tla.const_expr(not mixed):
+                tla_dist.local_sync()
+        if tla.const_expr(mixed):
+            tla_dist.local_sync(scope=CoreScope.MIX)
 
 
 @tla.kernel
@@ -305,6 +399,28 @@ def default_ordering(observed: tla.Tensor):
 @tla.kernel
 def ub_guard(flag: tla.Tensor, observed: tla.Tensor, peer: tla.Int32):
     ptr = tla.allocate(188 * 1024, tla.UInt8, tla.AddressSpace.ub, 32)
+    storage = tla.make_tensor(
+        ptr,
+        tla.make_layout(
+            tla.make_shape(1, 188 * 1024),
+            tla.make_stride(188 * 1024, 1),
+            layoutTag=tla.arch.RowMajor,
+        ),
+    )
+    slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
+    with tla.vector():
+        if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
+            storage[0, 0] = tla.UInt8(17)
+            storage[0, 188 * 1024 - 1] = tla.UInt8(29)
+            tla_dist.signal(slot, 1, peer=peer, op=SignalOp.ADD)
+            observed[0, 0] = tla.Int32(storage[0, 0])
+            observed[0, 1] = tla.Int32(storage[0, 188 * 1024 - 1])
+        tla_dist.barrier()
+
+
+@tla.kernel
+def dynamic_ub_guard(flag: tla.Tensor, observed: tla.Tensor, peer: tla.Int32):
+    ptr = tla.arch.get_dyn_ub(tla.UInt8, byte_alignment=32)
     storage = tla.make_tensor(
         ptr,
         tla.make_layout(
@@ -386,8 +502,25 @@ def manifest():
     yield "resource/user-ub-guards", ("ub-guard",)
 
 
-def _view(tensor):
-    return tla_dist.from_dlpack(tensor, layout_tag=tla.arch.RowMajor)
+def _view(tensor, *, column=False):
+    return tla_dist.from_dlpack(
+        tensor, layout_tag=tla.arch.ColumnMajor if column else tla.arch.RowMajor
+    )
+
+
+def _cube_inputs(runtime, blocks):
+    torch = runtime.torch
+    device = f"npu:{os.environ['LOCAL_RANK']}"
+    lhs = torch.ones((16, 16), dtype=torch.float16, device=device)
+    rhs = torch.ones_like(lhs)
+    output = torch.full((blocks * 16, 16), -1, dtype=torch.float32, device=device)
+    return lhs, rhs, output
+
+
+def _check_cube(runtime, result):
+    runtime.assert_equal(
+        result, runtime.torch.full(tuple(result.shape), 16, dtype=runtime.torch.float32)
+    )
 
 
 def _compile(runtime, kernel, args, *, mixed=False):
@@ -405,13 +538,16 @@ def _compile(runtime, kernel, args, *, mixed=False):
     return artifact
 
 
-def _launch(runtime, artifact, args, blocks, *, local_only=False):
+def _launch(runtime, artifact, args, blocks, *, local_only=False, ub=None):
     runtime.torch.npu.synchronize()
     runtime.shmem.barrier_all()
     error = None
     try:
         if not local_only or runtime.rank == 0:
-            artifact(*args, block_num=blocks)
+            if ub is None:
+                artifact(*args, block_num=blocks)
+            else:
+                artifact(*args, block_num=blocks, ub=ub)
             runtime.torch.npu.synchronize()
     except Exception as exc:
         error = f"launch: {type(exc).__name__}: {exc}"
@@ -424,15 +560,15 @@ def _wait(runtime, case):
     fmt = FORMATS[name]
     size = struct.calcsize(fmt)
     raw = runtime.shmem.symmetric_tensor((1, 256), torch.uint8)
+    raw8 = runtime.shmem.symmetric_tensor((1, 64), torch.uint8)
+    rawf = runtime.shmem.symmetric_tensor((1, 64), torch.uint8)
     started = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
     output = torch.zeros((1, 32), dtype=torch.int32, device=raw.device)
-    snapshot = torch.empty((1, 8), dtype=torch.uint8, device=raw.device)
+    snapshot = torch.empty((1, 40), dtype=torch.uint8, device=raw.device)
     typed = raw.view(getattr(torch, {"Float32": "float32"}.get(name, name.lower())))
-    counter = typed[:, 4:] if case.offset else typed
-    if case.rank1:
-        counter = counter.reshape(-1)
-    index = 3 if case.offset else 0
-    byte_offset = (4 + index) * size if case.offset else 0
+    counter8 = raw8.view(torch.int8)
+    counterf = rawf.view(torch.float32)
+    lhs, rhs, cube_result = _cube_inputs(runtime, 1)
     variants = [case]
     if case.cmp in (CompareOp.GE, CompareOp.LE):
         variants.append(
@@ -442,94 +578,142 @@ def _wait(runtime, case):
         )
     if case.dtype == "Float32" and case.target == float("inf"):
         variants.append(replace(case, target=-float("inf"), threshold=-float("inf")))
+    layouts = (
+        [(True, False), (False, True)] if case.offset else [(case.rank1, case.column)]
+    )
     launches = 0
     try:
         for variant in variants:
-            artifact = None
-            for producer in (0, 1):
-                for delayed in (False, True):
-                    expected = bytearray([0xA5] * 256)
-                    initial = variant.initial if delayed else variant.target
-                    threshold = (
-                        struct.unpack("<f", struct.pack("<f", variant.threshold))[0]
-                        if name == "Float32"
-                        else variant.threshold
-                    )
-                    predicate = {
-                        CompareOp.EQ: operator.eq,
-                        CompareOp.NE: operator.ne,
-                        CompareOp.GT: operator.gt,
-                        CompareOp.GE: operator.ge,
-                        CompareOp.LT: operator.lt,
-                        CompareOp.LE: operator.le,
-                    }[variant.cmp]
-                    assert predicate(initial, threshold) is (not delayed)
-                    assert predicate(variant.target, threshold)
-                    expected[byte_offset : byte_offset + size] = struct.pack(
-                        "<" + fmt, initial
-                    )
-                    raw.copy_(
-                        torch.tensor(list(expected), dtype=torch.uint8).reshape(1, 256)
-                    )
-                    output.zero_()
-                    snapshot.fill_(0x5A)
-                    started.zero_()
-                    bits = int.from_bytes(
-                        struct.pack("<" + fmt, variant.target), "little"
-                    )
-                    args = (
-                        _view(counter),
-                        _view(output),
-                        _view(snapshot),
-                        _view(started),
-                        tla.Int32(runtime.rank),
-                        tla.Int32(producer),
-                        tla.Int32(1 - runtime.rank),
-                        tla.Int32(index),
-                        tla.UInt64(bits),
-                        tla.Int32(1000000 if delayed else -1),
-                    )
-                    if artifact is None:
-                        artifact = _compile(
-                            runtime, typed_wait, (*args, variant), mixed=variant.mixed
-                        )
-                    _launch(runtime, artifact, args, 1)
-                    launches += 1
-                    receiver = runtime.rank != producer
-                    if receiver:
-                        expected[byte_offset : byte_offset + size] = struct.pack(
-                            "<" + fmt, variant.target
-                        )
-                    actual = bytes(raw.cpu().reshape(-1).tolist())
-                    error = None
-                    if actual != bytes(expected):
-                        error = f"typed writer/address/guard mismatch {name}/{variant.cmp.name}"
-                    seen = output.cpu()[0].tolist()
-                    if seen[0] != (1 if receiver else 0):
-                        error = f"wait return marker mismatch {seen}"
-                    if variant.mixed and seen[16] != 2:
-                        error = f"cube progress missing {seen}"
-                    wanted = (
-                        struct.pack("<" + fmt, variant.target).ljust(8, b"\0")
-                        if receiver
-                        else bytes([0x5A] * 8)
-                    )
-                    observed = bytes(snapshot.cpu().reshape(-1).tolist())
-                    if receiver:
-                        captured = struct.unpack("<" + fmt, observed[:size])[0]
-                        if not predicate(captured, threshold):
-                            error = f"wait returned before condition: {captured} {variant.cmp.name} {threshold}"
-                    if observed != wanted:
-                        error = f"wait returned with wrong immediate counter value: {observed.hex()} expected {wanted.hex()}"
-                    runtime.check_errors(error)
-                    if runtime.rank == 0:
-                        print(
-                            f"DETAIL producer={producer} delayed={delayed} target={variant.target}",
-                            flush=True,
-                        )
+            threshold = (
+                struct.unpack("<f", struct.pack("<f", variant.threshold))[0]
+                if name == "Float32"
+                else variant.threshold
+            )
+            predicate = {
+                CompareOp.EQ: operator.eq,
+                CompareOp.NE: operator.ne,
+                CompareOp.GT: operator.gt,
+                CompareOp.GE: operator.ge,
+                CompareOp.LT: operator.lt,
+                CompareOp.LE: operator.le,
+            }[variant.cmp]
+            for rank1, column in layouts:
+                selected = replace(variant, rank1=rank1, column=column)
+                counter = typed[:, 4:] if case.offset else typed
+                if rank1:
+                    counter = counter.reshape(-1)
+                elif column:
+                    counter = counter.T
+                artifact = None
+                for index in (1, 3) if case.offset else (0,):
+                    byte_offset = (4 + index) * size if case.offset else index * size
+                    for producer in (0, 1):
+                        for delayed in (False, True):
+                            initial = selected.initial if delayed else selected.target
+                            assert predicate(initial, threshold) is (not delayed)
+                            assert predicate(selected.target, threshold)
+                            expected = bytearray([0xA5] * 256)
+                            expected[byte_offset : byte_offset + size] = struct.pack(
+                                "<" + fmt, initial
+                            )
+                            expected8 = bytearray([0xA5] * 64)
+                            expectedf = bytearray([0xA5] * 64)
+                            expected8[0:1] = struct.pack("<b", 0 if delayed else -7)
+                            expectedf[0:4] = struct.pack("<f", 0 if delayed else 1.25)
+                            for target, data in (
+                                (raw, expected),
+                                (raw8, expected8),
+                                (rawf, expectedf),
+                            ):
+                                target.copy_(
+                                    torch.tensor(list(data), dtype=torch.uint8).reshape(
+                                        tuple(target.shape)
+                                    )
+                                )
+                            output.zero_()
+                            snapshot.fill_(0x5A)
+                            started.zero_()
+                            cube_result.fill_(-1)
+                            bits = int.from_bytes(
+                                struct.pack("<" + fmt, selected.target), "little"
+                            )
+                            args = (
+                                _view(counter, column=column),
+                                _view(output),
+                                _view(snapshot),
+                                _view(started),
+                                _view(counter8),
+                                _view(counterf),
+                                _view(lhs),
+                                _view(rhs),
+                                _view(cube_result),
+                                tla.Int32(runtime.rank),
+                                tla.Int32(producer),
+                                tla.Int32(1 - runtime.rank),
+                                tla.Int32(index),
+                                tla.UInt64(bits),
+                                tla.Int32(1000000 if delayed else -1),
+                            )
+                            if artifact is None:
+                                artifact = _compile(
+                                    runtime,
+                                    typed_wait,
+                                    (*args, selected),
+                                    mixed=selected.mixed,
+                                )
+                            _launch(runtime, artifact, args, 1)
+                            launches += 1
+                            receiver = runtime.rank != producer
+                            if receiver:
+                                expected[byte_offset : byte_offset + size] = (
+                                    struct.pack("<" + fmt, selected.target)
+                                )
+                                if selected.mixed:
+                                    expected8[0:1] = struct.pack("<b", -7)
+                                    expectedf[0:4] = struct.pack("<f", 1.25)
+                            error = None
+                            for target, data in (
+                                (raw, expected),
+                                (raw8, expected8),
+                                (rawf, expectedf),
+                            ):
+                                if bytes(target.cpu().reshape(-1).tolist()) != bytes(
+                                    data
+                                ):
+                                    error = f"typed writer/address/guard mismatch {name}/{selected.cmp.name}"
+                            seen = output.cpu()[0].tolist()
+                            if seen[0] != (1 if receiver else 0):
+                                error = f"wait return marker mismatch {seen}"
+                            wanted = bytearray([0x5A] * 40)
+                            if receiver:
+                                wanted[0:8] = struct.pack(
+                                    "<" + fmt, selected.target
+                                ).ljust(8, b"\0")
+                                if selected.mixed:
+                                    wanted[16:24] = struct.pack("<b", -7).ljust(
+                                        8, b"\0"
+                                    )
+                                    wanted[32:40] = struct.pack("<f", 1.25).ljust(
+                                        8, b"\0"
+                                    )
+                            observed = bytes(snapshot.cpu().reshape(-1).tolist())
+                            if receiver:
+                                captured = struct.unpack("<" + fmt, observed[:size])[0]
+                                if not predicate(captured, threshold):
+                                    error = f"wait returned before condition: {captured} {selected.cmp.name} {threshold}"
+                            if observed != bytes(wanted):
+                                error = f"wait returned wrong immediate typed values: {observed.hex()} expected {wanted.hex()}"
+                            runtime.check_errors(error)
+                            if selected.mixed:
+                                _check_cube(runtime, cube_result)
+                            if runtime.rank == 0:
+                                print(
+                                    f"DETAIL producer={producer} delayed={delayed} index={index} column={column} target={selected.target}",
+                                    flush=True,
+                                )
     finally:
-        runtime.shmem.free(started)
-        runtime.shmem.free(raw)
+        for tensor in (started, rawf, raw8, raw):
+            runtime.shmem.free(tensor)
     return launches
 
 
@@ -546,9 +730,19 @@ def _run(runtime, item, *, local_only=False):
         observed = torch.zeros(
             (1, 1056), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}"
         )
-        args = (_view(observed), case, tla.Int32(team))
+        lhs, rhs, cube_result = _cube_inputs(runtime, blocks)
+        args = (
+            _view(observed),
+            _view(lhs),
+            _view(rhs),
+            _view(cube_result),
+            case,
+            tla.Int32(team),
+        )
         artifact = _compile(runtime, collective, args, mixed=case.startswith("mix"))
-        _launch(runtime, artifact, (args[0], args[2]), blocks, local_only=local_only)
+        _launch(runtime, artifact, (*args[:4], args[5]), blocks, local_only=local_only)
+        if case.startswith("mix"):
+            _check_cube(runtime, cube_result)
         actual = observed.cpu()[0].tolist()
         expected = blocks * (2 if case.startswith("mix") else 1)
         runtime.check_errors(
@@ -587,50 +781,120 @@ def _run(runtime, item, *, local_only=False):
     elif item[0] == "ub-guard":
         flag = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
         try:
-            flag.zero_()
             output = torch.zeros((1, 4), dtype=torch.int32, device=flag.device)
             args = (_view(flag), _view(output), tla.Int32(1 - runtime.rank))
-            artifact = _compile(runtime, ub_guard, args)
-            _launch(runtime, artifact, args, 1)
-            seen = output.cpu()[0].tolist()
-            runtime.check_errors(
-                None
-                if seen[:2] == [17, 29] and flag.cpu()[0, 0].item() == 1
-                else f"UB guard/signal mismatch {seen}"
-            )
+            for dynamic in (False, True):
+                flag.zero_()
+                output.zero_()
+                artifact = _compile(
+                    runtime, dynamic_ub_guard if dynamic else ub_guard, args
+                )
+                budget = artifact.max_ub_bytes if dynamic else None
+                if dynamic:
+                    runtime.check_errors(
+                        None
+                        if budget == 188 * 1024
+                        else f"dynamic UB budget {budget} differs from reserved contract"
+                    )
+                _launch(runtime, artifact, args, 1, ub=budget)
+                seen = output.cpu()[0].tolist()
+                runtime.check_errors(
+                    None
+                    if seen[:2] == [17, 29] and flag.cpu()[0, 0].item() == 1
+                    else f"UB guard/signal mismatch {seen}"
+                )
+                if dynamic:
+                    from catlass.execution import TlaExecutionError
+
+                    refused = False
+                    try:
+                        artifact(*args, block_num=1, ub=budget + 1)
+                    except TlaExecutionError:
+                        refused = True
+                    runtime.check_errors(
+                        None
+                        if refused
+                        else "same artifact accepted out-of-range dynamic UB"
+                    )
         finally:
             runtime.shmem.free(flag)
+        return 2
+
     else:
         rounds = item[1]
-        payload = runtime.shmem.symmetric_tensor((1, 16), torch.float32)
-        flag = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
-        ack = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
+        payload = runtime.shmem.symmetric_tensor((14, 32), torch.float32)
+        flag = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
+        ack = runtime.shmem.symmetric_tensor((1, 64), torch.int32)
+        sentinel = -1024.0
         try:
-            payload.fill_(-1)
-            flag.zero_()
-            ack.zero_()
-            source = (
-                (torch.arange(rounds * 16, dtype=torch.float32) + runtime.rank * 1024)
-                .reshape(rounds, 16)
-                .to(payload.device)
-            )
-            output = torch.full_like(source, -1)
-            args = tuple(_view(t) for t in (payload, source, flag, ack, output)) + (
-                tla.Int32(1 - runtime.rank),
-                rounds,
-            )
-            artifact = _compile(runtime, publication, args)
-            _launch(runtime, artifact, args[:-1], 2)
-            runtime.assert_equal(
-                output,
-                (
-                    torch.arange(rounds * 16, dtype=torch.float32)
-                    + (1 - runtime.rank) * 1024
-                ).reshape(rounds, 16),
-            )
+            for mixed in (False, True):
+                payload.fill_(sentinel)
+                flag.fill_(-17)
+                ack.fill_(-17)
+                flag[:, 16] = 0
+                flag[:, 32] = 0
+                ack[:, 16] = 0
+                ack[:, 32] = 0
+                expected_source = torch.full(
+                    (rounds * 7 + 2, 32), sentinel, dtype=torch.float32
+                )
+                expected_output = torch.full_like(expected_source, sentinel)
+                expected_payload = torch.full((14, 32), sentinel, dtype=torch.float32)
+                for epoch in range(1, rounds + 1):
+                    values = (
+                        torch.arange(65, dtype=torch.float32).reshape(5, 13)
+                        + runtime.rank * 1048576
+                        + epoch * 256
+                    )
+                    remote_values = (
+                        torch.arange(65, dtype=torch.float32).reshape(5, 13)
+                        + (1 - runtime.rank) * 1048576
+                        + epoch * 256
+                    )
+                    row = (epoch - 1) * 7 + 1
+                    expected_source[row : row + 5, 8:21] = values
+                    expected_output[row : row + 5, 8:21] = remote_values
+                    slot = (epoch - 1) % 2
+                    expected_payload[slot * 7 + 1 : slot * 7 + 6, 8:21] = remote_values
+                source = expected_source.to(payload.device)
+                output = torch.full_like(source, sentinel)
+                lhs, rhs, cube_result = _cube_inputs(runtime, 2)
+                args = tuple(
+                    _view(t)
+                    for t in (
+                        payload[:, 8:],
+                        source[:, 8:],
+                        flag[:, 16:],
+                        ack[:, 16:],
+                        output[:, 8:],
+                        lhs,
+                        rhs,
+                        cube_result,
+                    )
+                ) + (
+                    tla.Int32(1 - runtime.rank),
+                    tla.Int32(runtime.rank),
+                    rounds,
+                    mixed,
+                )
+                artifact = _compile(runtime, publication, args, mixed=mixed)
+                _launch(runtime, artifact, args[:-2], 2)
+                runtime.assert_equal(output, expected_output)
+                runtime.assert_equal(source, expected_source)
+                runtime.assert_equal(payload, expected_payload)
+                expected_flag = torch.full((1, 64), -17, dtype=torch.int32)
+                for slot in (0, 1):
+                    expected_flag[0, 16 + slot * 16] = rounds - (
+                        (rounds - 1 - slot) % 2
+                    )
+                runtime.assert_equal(flag, expected_flag)
+                runtime.assert_equal(ack, expected_flag)
+                if mixed:
+                    _check_cube(runtime, cube_result)
         finally:
             for tensor in (ack, flag, payload):
                 runtime.shmem.free(tensor)
+        return 2
 
 
 def main():

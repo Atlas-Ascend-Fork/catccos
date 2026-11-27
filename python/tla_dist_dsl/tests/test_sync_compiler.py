@@ -240,7 +240,118 @@ def test_mixed_wait_types_share_one_kernel(tmp_path):
 def test_handwritten_ir_team_upper_bound_rejected(tmp_path):
     text = collective_kernel.dump_mlir(type_args=("aiv", "sync"))
     # The constant is an SSA operand, not an enum attribute.
-    text = text.replace("value = 0 : i32", "value = 2048 : i32")
+    mutated = text.replace("value = 0 : i32", "value = 2048 : i32")
+    mutated = mutated.replace("arith.constant 0 : i32", "arith.constant 2048 : i32")
+    assert mutated != text and "2048 : i32" in mutated, text
+    text = mutated
     result = lower(tmp_path, text)
     assert result.returncode != 0
     assert "team constant" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "typed-int8",
+        "typed-u64",
+        "typed-f32",
+        "typed-mixed-width",
+        "typed-column",
+        "collective-aiv",
+        "collective-mix",
+        "publication-aiv",
+        "publication-mix",
+        "static-ub",
+        "dynamic-ub",
+    ],
+)
+def test_acceptance_fixture_kernel_links(tmp_path, case):
+    require_native()
+    if _execution._find_hivmc_a5() is None:
+        pytest.skip("configure CANN for device linkage")
+    from end_to_end import test_sync as acceptance
+
+    def fake(dtype, shape, stride=None, layout=tla.arch.RowMajor):
+        return tla.make_fake_tensor(
+            dtype, shape, stride or (shape[-1], 1), layout_tag=layout
+        )
+
+    lhs = fake(tla.Float16, (16, 16))
+    rhs = fake(tla.Float16, (16, 16))
+    cube = fake(tla.Float32, (32, 16))
+    observed = fake(tla.Int32, (1, 1056))
+    mixed = case.endswith("mix") or case == "typed-mixed-width"
+    if case.startswith("typed"):
+        dtype = (
+            tla.Int8
+            if case == "typed-int8"
+            else (tla.Float32 if case == "typed-f32" else tla.UInt64)
+        )
+        column = case == "typed-column"
+        counter = (
+            fake(dtype, (32, 1), (1, 32), tla.arch.ColumnMajor)
+            if column
+            else fake(dtype, (1, 32))
+        )
+        args = (
+            counter,
+            observed,
+            fake(tla.UInt8, (1, 40)),
+            fake(tla.Int32, (1, 16)),
+            fake(tla.Int8, (1, 64)),
+            fake(tla.Float32, (1, 16)),
+            lhs,
+            rhs,
+            cube,
+            tla.Int32(0),
+            tla.Int32(0),
+            tla.Int32(1),
+            tla.Int32(3),
+            tla.UInt64(7),
+            tla.Int32(1000),
+            acceptance.WaitCase(dtype.__name__, mixed=mixed, column=column),
+        )
+        kernel = acceptance.typed_wait
+    elif case.startswith("collective"):
+        args = (
+            observed,
+            lhs,
+            rhs,
+            cube,
+            "mix-sync" if mixed else "aiv-sync",
+            tla.Int32(0),
+        )
+        kernel = acceptance.collective
+    elif case.startswith("publication"):
+        args = (
+            fake(tla.Float32, (14, 24), (32, 1)),
+            fake(tla.Float32, (702, 24), (32, 1)),
+            fake(tla.Int32, (1, 48), (64, 1)),
+            fake(tla.Int32, (1, 48), (64, 1)),
+            fake(tla.Float32, (702, 24), (32, 1)),
+            lhs,
+            rhs,
+            cube,
+            tla.Int32(1),
+            tla.Int32(0),
+            100,
+            mixed,
+        )
+        kernel = acceptance.publication
+    else:
+        args = (fake(tla.Int32, (1, 16)), fake(tla.Int32, (1, 4)), tla.Int32(1))
+        kernel = (
+            acceptance.dynamic_ub_guard if case == "dynamic-ub" else acceptance.ub_guard
+        )
+    artifact = tla_dist.compile(
+        kernel,
+        type_args=args,
+        cache_dir=tmp_path,
+        arch_scope="aic.c310" if mixed else "aiv.c310",
+    )
+    assert artifact.kernel_binary_path.is_file()
+    if mixed:
+        assert (
+            "hivm.hir.mmad" in artifact.artifacts.LLVM
+            or "mmad" in artifact.artifacts.LLVM
+        )
