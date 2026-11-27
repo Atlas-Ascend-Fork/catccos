@@ -293,14 +293,14 @@ def collective(
     case: tla.Constexpr[str],
     team: tla.Int32,
 ):
-    if tla.const_expr(case.startswith("mix") or case.startswith("fused")):
+    if tla.const_expr(case.startswith(("mix", "fused"))):
         cube_work(lhs, rhs, cube_result)
     if tla.const_expr(case.startswith("fused")):
         with tla.cube():
             if tla.arch.block_idx() == 0:
                 backend_await_started(_address(done.ptr))
     with tla.vector():
-        if tla.const_expr(case.startswith("mix") or case.startswith("fused")):
+        if tla.const_expr(case.startswith(("mix", "fused"))):
             flat = tla.arch.block_idx() * 2 + tla.arch.sub_block_idx()
         else:
             flat = tla.arch.block_idx()
@@ -815,7 +815,7 @@ def _run(runtime, item, *, local_only=False):
         )
         lhs, rhs, cube_result = _cube_inputs(runtime, blocks)
         done = torch.zeros((1, 16), dtype=torch.int32, device=observed.device)
-        fused = case.startswith("mix") or case.startswith("fused")
+        fused = case.startswith(("mix", "fused"))
         args = (
             _view(observed),
             _view(lhs),
