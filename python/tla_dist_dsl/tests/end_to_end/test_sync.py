@@ -289,13 +289,18 @@ def collective(
     lhs: tla.Tensor,
     rhs: tla.Tensor,
     cube_result: tla.Tensor,
+    done: tla.Tensor,
     case: tla.Constexpr[str],
     team: tla.Int32,
 ):
-    if tla.const_expr(case.startswith("mix")):
+    if tla.const_expr(case.startswith("mix") or case.startswith("fused")):
         cube_work(lhs, rhs, cube_result)
+    if tla.const_expr(case.startswith("fused")):
+        with tla.cube():
+            if tla.arch.block_idx() == 0:
+                backend_await_started(_address(done.ptr))
     with tla.vector():
-        if tla.const_expr(case.startswith("mix")):
+        if tla.const_expr(case.startswith("mix") or case.startswith("fused")):
             flat = tla.arch.block_idx() * 2 + tla.arch.sub_block_idx()
         else:
             flat = tla.arch.block_idx()
@@ -322,6 +327,8 @@ def collective(
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
             observed[0, 0] = 3
+            if tla.const_expr(case.startswith("fused")):
+                backend_write(_address(done.ptr), tla.Int64(1), 2, 0)
 
 
 @tla.kernel
@@ -480,6 +487,8 @@ def manifest():
         for kind in ("local", "sync", "barrier"):
             yield f"collective/{scope}-{kind}", ("collective", f"{scope}-{kind}", 0, 2)
         yield f"collective/{scope}-invalid", ("collective", f"{scope}-barrier", -1, 2)
+    for kind in ("local", "sync", "barrier"):
+        yield f"collective/fused-aiv-{kind}", ("collective", f"fused-aiv-{kind}", 0, 2)
     for dtype, dtype_class in DTYPES.items():
         for cmp in CompareOp:
             width = dtype_class.width
@@ -805,20 +814,29 @@ def _run(runtime, item, *, local_only=False):
             (1, 1056), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}"
         )
         lhs, rhs, cube_result = _cube_inputs(runtime, blocks)
+        done = torch.zeros((1, 16), dtype=torch.int32, device=observed.device)
+        fused = case.startswith("mix") or case.startswith("fused")
         args = (
             _view(observed),
             _view(lhs),
             _view(rhs),
             _view(cube_result),
+            _view(done),
             case,
             tla.Int32(team),
         )
-        artifact = _compile(runtime, collective, args, mixed=case.startswith("mix"))
-        _launch(runtime, artifact, (*args[:4], args[5]), blocks, local_only=local_only)
-        if case.startswith("mix"):
+        artifact = _compile(runtime, collective, args, mixed=fused)
+        _launch(runtime, artifact, (*args[:5], args[6]), blocks, local_only=local_only)
+        if fused:
             _check_cube(runtime, cube_result)
+        if case.startswith("fused"):
+            runtime.check_errors(
+                None
+                if done.cpu()[0, 0].item() == 1
+                else "AIV did not release the independent Cube waiter"
+            )
         actual = observed.cpu()[0].tolist()
-        expected = blocks * (2 if case.startswith("mix") else 1)
+        expected = blocks * (2 if fused else 1)
         runtime.check_errors(
             None
             if (local_only and runtime.rank != 0)

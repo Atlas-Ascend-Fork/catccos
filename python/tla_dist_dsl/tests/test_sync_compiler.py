@@ -259,6 +259,9 @@ def test_handwritten_ir_team_upper_bound_rejected(tmp_path):
         "typed-column",
         "collective-aiv",
         "collective-mix",
+        "collective-fused-aiv-local",
+        "collective-fused-aiv-sync",
+        "collective-fused-aiv-barrier",
         "publication-aiv",
         "publication-mix",
         "static-ub",
@@ -280,7 +283,11 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
     rhs = fake(tla.Float16, (16, 16))
     cube = fake(tla.Float32, (32, 16))
     observed = fake(tla.Int32, (1, 1056))
-    mixed = case.endswith("mix") or case == "typed-mixed-width"
+    mixed = (
+        case.endswith("mix")
+        or case == "typed-mixed-width"
+        or case.startswith("collective-fused")
+    )
     if case.startswith("typed"):
         dtype = (
             tla.Int8
@@ -318,7 +325,10 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
             lhs,
             rhs,
             cube,
-            "mix-sync" if mixed else "aiv-sync",
+            fake(tla.Int32, (1, 16)),
+            case.removeprefix("collective-")
+            if case.startswith("collective-fused")
+            else ("mix-sync" if mixed else "aiv-sync"),
             tla.Int32(0),
         )
         kernel = acceptance.collective
