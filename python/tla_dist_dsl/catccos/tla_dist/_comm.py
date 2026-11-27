@@ -449,10 +449,13 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
     if dtype == "f32":
         if type(value) not in (int, float):
             raise TlaLoweringError(f"{name}: Float32 threshold requires int or float")
+        original_finite = math.isfinite(value)
         try:
             value = struct.unpack("f", struct.pack("f", value))[0]
         except (OverflowError, struct.error) as error:
             raise TlaLoweringError(f"{name}: finite threshold outside Float32 range") from error
+        if original_finite and not math.isfinite(value):
+            raise TlaLoweringError(f"{name}: finite threshold outside Float32 range")
         if math.isnan(value):
             raise TlaLoweringError(f"{name}: NaN thresholds are unsupported")
     else:
@@ -462,6 +465,12 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
         low, high = (0, 2**bits - 1) if dtype.startswith("u") else (-2**(bits-1), 2**(bits-1)-1)
         if not low <= value <= high:
             raise TlaLoweringError(f"{name}: threshold outside {dtype} range [{low}, {high}]")
+    if dtype == "u64" and value >= 2**63:
+        # MLIR's Python binding takes a signed int64 argument. Construct the
+        # identical 64 bits in ui64 storage; no arithmetic signed conversion.
+        ty = scalar_type.mlir_type()
+        return mlir_ir.Operation.create("arith.constant", results=[ty],
+            attributes={"value": mlir_ir.IntegerAttr.get(ty, value - 2**64)}, loc=loc).results[0]
     return scalar_type(value).ir_value()
 
 
