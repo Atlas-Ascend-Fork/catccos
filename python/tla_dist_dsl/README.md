@@ -359,7 +359,7 @@ preconditions; unsupported ADD mappings and nonowner default waits trap.
 Run the parameterized suites after building with the pinned dependencies:
 
 ```bash
-python -m pytest tests/frontend/ops/comm/test_sync.py tests/test_sync.py
+python -m pytest tests/frontend/ops/comm/test_sync.py tests/test_sync_compiler.py
 python tests/end_to_end/test_sync.py --list
 torchrun --standalone --nproc-per-node=2 tests/end_to_end/test_sync.py --case 'typed/*'
 ```
