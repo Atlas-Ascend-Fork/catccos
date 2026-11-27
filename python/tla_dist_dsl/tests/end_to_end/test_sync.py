@@ -207,6 +207,10 @@ def typed_wait(
     slotf = tla.tile_view(counterf, tla.make_shape(1, 1), tla.make_coord(0, 0))
     if tla.const_expr(case.rank1):
         counter_slot = tla.tile_view(counter, tla.make_shape(1), tla.make_coord(index))
+    elif tla.const_expr(case.column):
+        counter_slot = tla.tile_view(
+            counter, tla.make_shape(1, 1), tla.make_coord(index, 0)
+        )
     else:
         counter_slot = tla.tile_view(
             counter, tla.make_shape(1, 1), tla.make_coord(0, index)
@@ -808,9 +812,9 @@ def _run(runtime, item, *, local_only=False):
 
                     refused = False
                     try:
-                        artifact(*args, block_num=1, ub=budget + 1)
-                    except TlaExecutionError:
-                        refused = True
+                        artifact(*args, block_num=1, ub=budget + 32)
+                    except TlaExecutionError as error:
+                        refused = "limit" in str(error) or "exceed" in str(error)
                     runtime.check_errors(
                         None
                         if refused
