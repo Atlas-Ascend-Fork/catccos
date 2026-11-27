@@ -303,7 +303,7 @@ Existing `CopyParams` string compatibility is retained.
 | `wait_until(counter, value, *, cmp=CompareOp.EQ)` | Blocking local typed-slot condition wait. It refreshes the counter cacheline and does not acquire arbitrary payload data. |
 
 `TEAM_WORLD` is 0. A team handle of -1 makes the entire sync/barrier operation a
-no-op, including its local synchronization. Other handles must be valid,
+no-op, including its local synchronization. Other constant handles must be below the fixed public `ACLSHMEM_MAX_TEAMS` limit; runtime handles must be valid,
 uniform across participants and initialized externally. Collectives require
 uniform control flow; dynamic if/while and dynamic loop bounds are rejected.
 SIMT use is unsupported. Keep fixed-trip loops and team selections consistent
@@ -354,7 +354,12 @@ team collective. Do not overlap external RMA/AMO, explicit QP0 or Host
 submissions with its quiet/collective. Per-core UB scratch does not make a
 shared CQ safe for multiple pollers. Directly mapped MTE signal writers may
 operate on multiple AIVs. Network topology and dynamic ownership remain caller
-preconditions; unsupported ADD mappings and nonowner default waits trap.
+preconditions; unsupported ADD mappings and nonowner default waits trap. The signal capability
+adapter reads `topo_list` and peer base fields through the pinned SHMEM device
+state accessor, since its public pointer translation does not report transport
+capability. CMake verifies the exact header hashes recorded in
+`_shmem_contract.json`; the actual notification still uses the public SHMEM API.
+Changed or incompatible state headers cause configuration failure.
 
 Run the parameterized suites after building with the pinned dependencies:
 

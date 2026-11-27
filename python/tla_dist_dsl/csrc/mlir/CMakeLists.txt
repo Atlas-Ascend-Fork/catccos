@@ -50,6 +50,7 @@ if(NOT DEFINED ASCEND_HOME_PATH OR "${ASCEND_HOME_PATH}" STREQUAL "")
 endif()
 
 include(cmake/RdmaBackend.cmake)
+include(cmake/SyncBackendContract.cmake)
 
 # Resolve the shared AscendNPU-IR installation before adding the upstream TLA
 # project. Dependencies discovered in this parent scope are visible to both

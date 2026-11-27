@@ -73,6 +73,7 @@ if(BISHENGIR_BUILD_TEMPLATE)
       COMMAND_EXPAND_LISTS
       DEPENDS
         "${source}"
+        "${TLA_DIST_DSL_MLIR_SOURCE_DIR}/bc/Sync/signal_policy.h"
         "${CATLASS_TLA_DSL_ROOT}/csrc/mlir/bc/common.h"
         "${CATLASS_TLA_DSL_ROOT}/csrc/mlir/bc/dma_common.h"
         "${CATCCOS_ROOT}/include/catccos/comm/tile/tile_remote_copy.hpp"

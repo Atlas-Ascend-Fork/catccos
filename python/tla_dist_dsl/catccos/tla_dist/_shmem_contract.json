@@ -1,0 +1,12 @@
+{
+  "revision": "3ed85a9ce25b91a2ebfde7f2346d61106e2a91f5",
+  "max_teams": 2048,
+  "headers": {
+    "include/host_device/shmem_common_types.h": "528cd9698815312358253c40b74f4f0668b86af637843f9f767f6d625c273a34",
+    "src/device/shmemi_device_common.h": "dab89ad0a1f0070ce147bd24d83e982c580ff8f25a9c2765b2d88730d5edb0bb",
+    "src/device/shmemi_device_common.hpp": "fb5cd3c88ac2deb00d6a34e1815d9e795e7d2df0276b4fa676ec6db8e23013fd",
+    "src/device/gm2gm/shmem_device_so.hpp": "342c1b66224104f0a1991019a6809a2922d84a1f061cd51224142a2a78ce385f",
+    "src/device/gm2gm/engine/shmem_device_mte.hpp": "fd24610b31778fdd0e6c0878f435a11237412747b64a923b7b6b5318d9fb2d0b",
+    "include/host/shmem_host_def.h": "901e48818b94154223203f9552d80ee841a3b90db476938db0c09a873f2b0140"
+  }
+}

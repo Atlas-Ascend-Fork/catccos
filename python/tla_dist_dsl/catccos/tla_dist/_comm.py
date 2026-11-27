@@ -25,6 +25,7 @@ from catlass.params import AtomicMode
 from catlass.tla.typing import Tensor
 from catlass.types import PtrType
 
+from ._shmem_contract import SHMEM_MAX_TEAMS
 from .params import CompareOp, CoreScope, SignalOp, TEAM_WORLD, CopyMode, CopyParams, CopyTransport, CopyWqePipe
 
 
@@ -367,7 +368,7 @@ def _require_simd(name: str) -> None:
         raise TlaLoweringError(f"{name} requires the SIMD scalar body of tla.vector()")
 
 
-def _index32(name: str, value: Any, *, minimum: int, loc: Any) -> mlir_ir.Value:
+def _index32(name: str, value: Any, *, minimum: int, loc: Any, maximum: int = 2**31-1) -> mlir_ir.Value:
     original = _core._resolve_bound_value(value)
     if isinstance(original, bool):
         raise TlaLoweringError(f"{name} requires an integer, got bool")
@@ -375,8 +376,8 @@ def _index32(name: str, value: Any, *, minimum: int, loc: Any) -> mlir_ir.Value:
         raise TlaLoweringError(f"{name} requires Index or an integer no wider than 32 bits")
     resolved, _ = _resolve_integer(original)
     if isinstance(resolved, int):
-        if not minimum <= resolved <= 2**31 - 1:
-            raise TlaLoweringError(f"{name} constant must be in [{minimum}, 2147483647]")
+        if not minimum <= resolved <= maximum:
+            raise TlaLoweringError(f"{name} constant must be in [{minimum}, {maximum}]")
     elif isinstance(resolved, mlir_ir.Value) and mlir_ir.IntegerType.isinstance(resolved.type):
         if mlir_ir.IntegerType(resolved.type).width > 32:
             raise TlaLoweringError(f"{name} runtime integer must be no wider than 32 bits")
@@ -390,7 +391,7 @@ def _collective(name: str, scope: CoreScope, team: Any | None, loc: Any) -> None
         _require_simd(name)
     elif _runtime._has_enclosing_region("vector") or _runtime._has_enclosing_region("cube"):
         raise TlaLoweringError(f"{name}: MIX scope requires the common layer outside cube/vector regions")
-    operands = [] if team is None else [_index32("team", team, minimum=-1, loc=loc)]
+    operands = [] if team is None else [_index32("team", team, minimum=-1, maximum=SHMEM_MAX_TEAMS-1, loc=loc)]
     mlir_ir.Operation.create(name, operands=operands, attributes={"scope": attr}, loc=loc)
 
 

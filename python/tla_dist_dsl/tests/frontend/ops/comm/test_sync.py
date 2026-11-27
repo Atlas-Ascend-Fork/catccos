@@ -118,3 +118,21 @@ def test_quiet_default_rejects_qp_arguments(kwargs):
         with tla.vector(): tla_dist.quiet(**kwargs)
     with pytest.raises(TlaLoweringError, match="default quiet does not accept"):
         kernel.dump_mlir(type_args=())
+
+
+@pytest.mark.parametrize("team",[-2,2048,2**31-1])
+@pytest.mark.parametrize("operation",["sync","barrier"])
+def test_invalid_constant_team_handle(team,operation):
+    @tla.kernel
+    def kernel():
+        with tla.vector(): getattr(tla_dist,operation)(team=team)
+    with pytest.raises(TlaLoweringError,match="team constant"):
+        kernel.dump_mlir(type_args=())
+
+
+@pytest.mark.parametrize("team",[-1,0,2047])
+def test_team_handle_constant_boundaries(team):
+    @tla.kernel
+    def kernel():
+        with tla.vector(): tla_dist.sync(team=team)
+    assert '"tla_dist.sync"' in kernel.dump_mlir(type_args=())

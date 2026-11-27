@@ -87,7 +87,7 @@ public:
                 }
                 if (!isa<LocalSyncOp>(op)) {
                     APInt team;
-                    if (matchPattern(op->getOperand(0), m_ConstantInt(&team)) && team.getSExtValue() < -1)
+                    if (matchPattern(op->getOperand(0), m_ConstantInt(&team)) && (team.getSExtValue() < -1 || team.getSExtValue() >= TLA_DIST_SHMEM_MAX_TEAMS))
                         return fail("team constant must be WORLD, INVALID=-1 or a valid nonnegative handle");
                 }
                 if (!mix && core && core.getFuncCoreType() == hivm::TFuncCoreType::AIV) {

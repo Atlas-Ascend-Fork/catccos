@@ -172,3 +172,12 @@ def test_mixed_wait_types_share_one_kernel(tmp_path):
     assert artifact.kernel_binary_path.is_file()
     assert "tla_dist_wait_u64" in artifact.__mlir__
     assert "tla_dist_wait_i32" in artifact.__mlir__
+
+
+def test_handwritten_ir_team_upper_bound_rejected(tmp_path):
+    text=collective_kernel.dump_mlir(type_args=("aiv","sync"))
+    # The constant is an SSA operand, not an enum attribute.
+    text=text.replace('value = 0 : i32','value = 2048 : i32')
+    result=lower(tmp_path,text)
+    assert result.returncode!=0
+    assert "team constant" in result.stderr

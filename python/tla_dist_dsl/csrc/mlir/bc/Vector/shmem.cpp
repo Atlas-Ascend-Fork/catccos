@@ -15,6 +15,7 @@
 #include "catccos/comm/tile/tile_remote_copy.hpp"
 #include "catccos/detail/remote_copy_type.hpp"
 #include "shmem.h"
+#include "../Sync/signal_policy.h"
 
 // The mixed helper template selects MIX header implementations without running
 // ccec's mixed-kernel transformation on these plain C ABI exports.
@@ -310,10 +311,18 @@ extern "C" {
     aclshmem_fence();
 }
 [aicore] __attribute__((always_inline, convergent)) void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op, int32_t peer) {
-    // ADD requires a directly mapped peer. SET may enter RoCE only on the
-    // unique flat AIV0 owner. aclshmem_ptr is the public topology check.
-    bool mapped = aclshmem_ptr(reinterpret_cast<__gm__ void*>(addr), peer) != nullptr;
-    if ((!mapped && op == 1) || (!mapped && !tlaDistDefaultOwner())) { trap(); return; }
+    // The fixed SHMEM ABI publishes topology and base mappings in device
+    // state. Only inspect it here; all actual operations still use the public
+    // aclshmemx_signal_op. Never infer reachability from translated slot != 0.
+    auto* state = aclshmemi_get_state();
+    constexpr uint32_t expectedVersion = (1U << 16) + sizeof(aclshmem_device_host_state_t);
+    if (state->version != expectedVersion) { trap(); return; }
+    if (peer < 0 || peer >= aclshmem_n_pes()) { trap(); return; }
+    bool mte = (state->topo_list[peer] & ACLSHMEM_TRANSPORT_MTE) != 0;
+    bool base = state->p2p_device_heap_base[peer] != nullptr;
+    bool roce = (state->topo_list[peer] & ACLSHMEM_TRANSPORT_ROCE) != 0;
+    if (!tla_dist_sync::signalRouteAllowed(mte, base, roce, TLA_DIST_ENABLE_RDMA,
+                                          tlaDistDefaultOwner(), op == 1)) { trap(); return; }
     int backendOp;
     switch (op) {
         case 0: backendOp = ACLSHMEM_SIGNAL_SET; break;
