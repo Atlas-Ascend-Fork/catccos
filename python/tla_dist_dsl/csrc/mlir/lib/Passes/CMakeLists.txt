@@ -8,6 +8,7 @@
 
 add_library(TlaDistPasses STATIC
   TlaDistLowerCommPass.cpp
+  TlaDistSyncContractPass.cpp
   ../Dialect/TlaDist/IR/TlaDistDialect.cpp
   ../Dialect/TlaDist/IR/TlaDistOps.cpp
 )

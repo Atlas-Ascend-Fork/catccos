@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any
 
+from ._sync_resources import MTE_UB_OFFSET, MTE_UB_BYTES, SYNC_EVENT_ID
+
 
 class ShmemUnavailableError(RuntimeError):
     """Raised when the ACLSHMEM Python package cannot be loaded."""
@@ -92,6 +94,13 @@ class ShmemRuntime:
             result = shmem.aclshmemx_init_attr(shmem.InitMode.UNIQUEID, attr)
         if result not in (None, 0):
             raise ShmemRuntimeError(f"ACLSHMEM UID initialization failed with status {result}")
+        try:
+            result = shmem.aclshmemx_set_mte_config(MTE_UB_OFFSET, MTE_UB_BYTES, SYNC_EVENT_ID)
+            if result not in (None, 0):
+                raise ShmemRuntimeError(f"ACLSHMEM MTE resource configuration failed with status {result}")
+        except BaseException:
+            shmem.aclshmem_finalize()
+            raise
         self._shmem = shmem
         self._initialized = True
         return self

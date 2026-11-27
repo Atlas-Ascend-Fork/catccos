@@ -47,9 +47,11 @@ if(BISHENGIR_BUILD_TEMPLATE)
       "-I${TLA_DIST_DSL_SHMEM_ROOT}/src"
       "-I${TLA_DIST_DSL_SHMEM_ROOT}/src/device"
       --cce-enable-print
-      --cce-aicore-arch=dav-c310-vec
+
     )
-    if(core_type STREQUAL "mix_aiv")
+    if(core_type STREQUAL "mix_aic")
+      list(APPEND bisheng_args --cce-aicore-arch=dav-c310-cube -D__CCE_AICORE_ENABLE_MIX__=1)
+    elseif(core_type STREQUAL "mix_aiv")
       # These are plain C ABI helper definitions, not a mixed kernel entry.
       # Select the MIX header implementations (including SyncAll<true>), but
       # leave MIX splitting/codegen to the final HIVMC invocation. Enabling
@@ -59,6 +61,9 @@ if(BISHENGIR_BUILD_TEMPLATE)
            -DTLA_DIST_REQUIRE_MIX_SYNC)
     elseif(NOT core_type STREQUAL "aiv")
       message(FATAL_ERROR "Unsupported TLA_DIST vector core type: ${core_type}")
+    endif()
+    if(NOT core_type STREQUAL "mix_aic")
+      list(APPEND bisheng_args --cce-aicore-arch=dav-c310-vec)
     endif()
     list(APPEND bisheng_args -std=c++17 -o "${output}")
 
@@ -81,6 +86,10 @@ if(BISHENGIR_BUILD_TEMPLATE)
   endfunction()
 
   add_subdirectory(Vector)
+  set(_tla_dist_sync_aic "${CMAKE_CURRENT_BINARY_DIR}/sync.mix_aic.c310.bc")
+  tla_dist_compile_vector_bitcode("${CMAKE_CURRENT_SOURCE_DIR}/Sync/sync_aic.cpp" mix_aic "${_tla_dist_sync_aic}")
+  set(_tla_dist_linked_mix_aic "${CMAKE_CURRENT_BINARY_DIR}/meta_op.mix_aic.c310.bc")
+  add_custom_target(tla_dist_sync_aic_bitcode DEPENDS "${_tla_dist_sync_aic}")
 
   set(_tla_dist_bc_package_dir "${TLA_DIST_PYTHON_OUTPUT_DIR}/bc")
   set(_tla_dist_base_dir "${CMAKE_CURRENT_BINARY_DIR}/base")
@@ -143,6 +152,15 @@ if(BISHENGIR_BUILD_TEMPLATE)
   )
   add_custom_target(tla_dist_linked_mix_aiv_bitcode
     DEPENDS "${_tla_dist_linked_mix_aiv}")
+
+  add_custom_command(
+    OUTPUT "${_tla_dist_linked_mix_aic}"
+    COMMAND "${TLA_DIST_LLVM_LINK_TOOL}" "${_tla_dist_base_aic}" "${_tla_dist_sync_aic}"
+            -o "${_tla_dist_linked_mix_aic}"
+    DEPENDS tla_dist_base_bitcode tla_dist_sync_aic_bitcode "${_tla_dist_base_aic}" "${_tla_dist_sync_aic}"
+    VERBATIM)
+  add_custom_target(tla_dist_linked_mix_aic_bitcode DEPENDS "${_tla_dist_linked_mix_aic}")
+  set(_tla_dist_packaged_base_mix_aic "${_tla_dist_bc_package_dir}/meta_op.mix_aic.c310.bc")
   set(_tla_dist_packaged_base_aic
       "${_tla_dist_bc_package_dir}/meta_op.aic.c310.bc")
   set(_tla_dist_packaged_base_aiv
@@ -154,12 +172,15 @@ if(BISHENGIR_BUILD_TEMPLATE)
       "${_tla_dist_bc_package_dir}/shmem.mix_aiv.c310.bc")
   add_custom_command(
     OUTPUT
+      "${_tla_dist_packaged_base_mix_aic}"
       "${_tla_dist_packaged_base_aic}"
       "${_tla_dist_packaged_base_aiv}"
       "${_tla_dist_packaged_aiv}"
       "${_tla_dist_packaged_base_mix_aiv}"
       "${_tla_dist_packaged_mix_aiv}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_tla_dist_bc_package_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_tla_dist_linked_mix_aic}" "${_tla_dist_packaged_base_mix_aic}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${_tla_dist_base_aic}" "${_tla_dist_packaged_base_aic}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -175,6 +196,7 @@ if(BISHENGIR_BUILD_TEMPLATE)
       tla_dist_shmem_vector_bitcode
       tla_dist_linked_aiv_bitcode
       tla_dist_linked_mix_aiv_bitcode
+      tla_dist_linked_mix_aic_bitcode
       "${_tla_dist_base_aic}"
       "${_tla_dist_linked_aiv}"
       "${TLA_DIST_AIV_BITCODE}"
@@ -183,6 +205,7 @@ if(BISHENGIR_BUILD_TEMPLATE)
   )
   add_custom_target(tla_dist_shmem_bitcode
     DEPENDS
+      "${_tla_dist_packaged_base_mix_aic}"
       "${_tla_dist_packaged_base_aic}"
       "${_tla_dist_packaged_base_aiv}"
       "${_tla_dist_packaged_aiv}"

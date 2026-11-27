@@ -25,6 +25,16 @@ barrier_all = _comm.barrier_all
 quiet = _comm.quiet
 remote_copy = _comm.remote_copy
 shmem_ptr = _comm.shmem_ptr
+local_sync = _comm.local_sync
+sync = _comm.sync
+barrier = _comm.barrier
+fence = _comm.fence
+signal = _comm.signal
+wait_until = _comm.wait_until
+CoreScope = params.CoreScope
+SignalOp = params.SignalOp
+CompareOp = params.CompareOp
+TEAM_WORLD = params.TEAM_WORLD
 CompileCallable = _compiler.CompileCallable
 compile = _compiler.compile
 
@@ -38,6 +48,17 @@ _CATLASS_COMPAT_EXPORTS = {
 __all__ = [  # noqa: PLE0604 - the pinned upstream export list is intentional
     *_BASE_EXPORTS,
     "CompileCallable",
+    "CoreScope",
+    "SignalOp",
+    "CompareOp",
+    "TEAM_WORLD",
+    "local_sync",
+    "sync",
+    "barrier",
+    "fence",
+    "signal",
+    "wait_until",
+
     "__version__",
     "barrier_all",
     "compile",

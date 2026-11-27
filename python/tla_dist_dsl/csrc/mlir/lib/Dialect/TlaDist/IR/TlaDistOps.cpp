@@ -9,8 +9,11 @@
 #include "Dialect/TlaDist/IR/TlaDistOps.h"
 
 #include "Dialect/Tla/IR/TlaOps.h"
+#include "Passes/TlaTensorDescriptor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+
+#include "tla_dist/Enums.cpp.inc"
 
 #define GET_OP_CLASSES
 #include "tla_dist/Ops.cpp.inc"
@@ -29,3 +32,29 @@ mlir::LogicalResult tla_dist::ShmemPtrOp::verify()
         return emitOpError("requires the scalar body of a tla.vector region");
     return mlir::success();
 }
+
+namespace {
+mlir::LogicalResult verifySlot(mlir::Operation* op, mlir::Value slot, mlir::Value value, bool signal)
+{
+    auto info = ::tla::decodeTensorTypeInfo(slot.getType());
+    if (mlir::failed(info) || info->addressSpace != "gm" || !::tla::isLinearLayout(info->layoutTag))
+        return op->emitOpError("requires a linear symmetric GM tensor slot");
+    // Tensor shape is decoded before descriptor lowering. Never accept a dynamic extent.
+    auto raw = ::tla::parseTensorInfo(slot.getType());
+    if (mlir::failed(raw) || raw->shape.empty() || raw->shape.size() > 2 ||
+        llvm::any_of(raw->shape, [](int64_t n) { return n != 1; }))
+        return op->emitOpError("requires a provably single-slot shape (1,) or (1,1)");
+    auto dtype = raw->elementType;
+    if (dtype != value.getType())
+        return op->emitOpError("threshold dtype must match counter dtype");
+    auto integer = mlir::dyn_cast<mlir::IntegerType>(dtype);
+    bool valid = dtype.isF32() || (integer && (integer.getWidth() == 8 || integer.getWidth() == 16 ||
+        integer.getWidth() == 32 || integer.getWidth() == 64));
+    if (!valid || (signal && (!dtype.isSignlessInteger(32))))
+        return op->emitOpError(signal ? "signal requires Int32" : "unsupported wait counter dtype");
+    return mlir::success();
+}
+}
+
+mlir::LogicalResult tla_dist::SignalOp::verify() { return verifySlot(*this, getFlag(), getValue(), true); }
+mlir::LogicalResult tla_dist::WaitUntilOp::verify() { return verifySlot(*this, getCounter(), getValue(), false); }

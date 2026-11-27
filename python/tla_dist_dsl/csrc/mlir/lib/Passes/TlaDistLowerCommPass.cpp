@@ -475,7 +475,7 @@ public:
         WalkResult result = getOperation().walk([&](Operation* operation) {
             StringRef name = operation->getName().getStringRef();
             auto transport = operation->getAttrOfType<StringAttr>("transport");
-            bool needsExplicitSync = name == "tla_dist.quiet" ||
+            bool needsExplicitSync = (name.starts_with("tla_dist.") && name != "tla_dist.remote_copy" && name != "tla_dist.shmem_ptr" && name != "tla_dist.barrier_all") ||
                                      (name == "tla_dist.remote_copy" && transport && transport.getValue() != "mte");
             if (needsExplicitSync && usesAutoSync(operation)) {
                 operation->emitOpError("RDMA/UDMA requires explicit synchronization");
@@ -498,6 +498,28 @@ public:
 
     void runOnOperation() override
     {
+        bool defaults = false;
+        getOperation().walk([&](Operation* op) {
+            defaults |= isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
+        });
+        auto defaultDirection = [](::Pipe src, ::Pipe dst) {
+            return (src == ::Pipe::scalar && dst == ::Pipe::mte3) ||
+                   (src == ::Pipe::mte3 && dst == ::Pipe::scalar) ||
+                   (src == ::Pipe::mte2 && dst == ::Pipe::scalar) ||
+                   (src == ::Pipe::scalar && dst == ::Pipe::mte2) ||
+                   (src == ::Pipe::mte2 && dst == ::Pipe::mte3) ||
+                   (src == ::Pipe::mte3 && dst == ::Pipe::mte2);
+        };
+        bool conflict = false;
+        if (defaults) getOperation().walk([&](::tla::FlagOp flag) {
+            auto src = flag->getAttrOfType<::tla::PipeAttr>("src_pipe");
+            auto dst = flag->getAttrOfType<::tla::PipeAttr>("dst_pipe");
+            if (flag.getId() == 0 && src && dst && defaultDirection(src.getValue(), dst.getValue())) {
+                flag.emitOpError("event 0 in this pipe direction is reserved by SHMEM synchronization");
+                conflict = true;
+            }
+        });
+        if (conflict) { signalPassFailure(); return; }
         llvm::StringSet<> names;
         getOperation().walk([&](::tla::FlagOp flag) { names.insert(flag.getName()); });
         // Match CATLASS's module-wide allocation scope, deduplicating by pipe pair and id.
@@ -506,12 +528,13 @@ public:
         getOperation().walk([&](Operation* op) {
             auto copy = dyn_cast<RemoteCopyOp>(op);
             auto quiet = dyn_cast<QuietOp>(op);
-            if (!copy && !quiet)
-                return;
-            IntegerAttr eventId = copy ? copy.getEventIdAttr() : quiet.getEventIdAttr();
+            bool defaultOp = isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
+            if (!copy && !quiet && !defaultOp) return;
+            IntegerAttr eventId = defaultOp ? IntegerAttr::get(IntegerType::get(&getContext(), 32), 0) :
+                (copy ? copy.getEventIdAttr() : quiet.getEventIdAttr());
             if (!eventId)
                 return;
-            StringRef transport = copy ? copy.getTransport() : quiet.getTransport();
+            StringRef transport = defaultOp ? "default" : (copy ? copy.getTransport() : quiet.getTransport());
             auto reserve = [&](::Pipe src, ::Pipe dst) {
                 if (!reserved.emplace(src, dst, eventId.getInt()).second)
                     return;
@@ -524,7 +547,14 @@ public:
                     op->getLoc(), ::tla::FlagType::get(&getContext()), name, ::tla::PipeAttr::get(&getContext(), src),
                     ::tla::PipeAttr::get(&getContext(), dst), eventId.getInt());
             };
-            if (copy && transport == "mte") {
+            if (defaultOp) {
+                reserve(::Pipe::scalar, ::Pipe::mte3); reserve(::Pipe::mte3, ::Pipe::scalar);
+                reserve(::Pipe::mte2, ::Pipe::scalar); reserve(::Pipe::scalar, ::Pipe::mte2);
+                reserve(::Pipe::mte2, ::Pipe::mte3); reserve(::Pipe::mte3, ::Pipe::mte2);
+            } else if (defaults && eventId.getInt() == 0) {
+                op->emitOpError("event 0 for explicit communication conflicts with the SHMEM default synchronization domain");
+                conflict = true;
+            } else if (copy && transport == "mte") {
                 reserve(::Pipe::mte2, ::Pipe::mte3);
             } else if (transport == "rdma") {
                 reserve(::Pipe::scalar, ::Pipe::mte3);
@@ -542,7 +572,114 @@ public:
             // CATLASS reserves explicit ids before allocating automatic flags,
             // then erases this unused declaration without emitting set/wait.
         });
+        if (conflict) signalPassFailure();
     }
+};
+
+// The slot ABI is an address plus an exactly typed threshold; it is independent
+// of the copy ABI and does not inherit its Float32 restriction.
+FailureOr<Value> materializeSlotAddress(Operation* op, Value tensor, OpBuilder& builder,
+                                      DenseMap<Value, Value>& cache)
+{
+    auto source = tensor.getDefiningOp<::tla::TensorDescOp>();
+    if (!source)
+        return op->emitOpError("requires a materialized tensor descriptor"), failure();
+    auto decoded = ::tla::descriptorFromTensorDescOp(source);
+    if (failed(decoded) || decoded->addrspace != "gm" || !::tla::isLinearLayout(decoded->layoutTag))
+        return op->emitOpError("requires a linear symmetric GM slot"), failure();
+    auto& desc = *decoded;
+    auto base = ::tla::getOrMaterializeDescriptorBaseMemref(builder, op->getLoc(), desc, op, cache);
+    if (failed(base))
+        return failure();
+    auto metadata = builder.create<memref::ExtractStridedMetadataOp>(op->getLoc(), *base);
+    auto i64 = [&](Value v) { return ::tla::castValueToI64(builder, op->getLoc(), v); };
+    Location loc = op->getLoc();
+    Value offset = i64(metadata.getOffset());
+    for (unsigned dim = 0; dim != 2; ++dim) {
+        Value delta = builder.create<arith::MulIOp>(loc, i64(desc.coord[dim]), i64(desc.stride[dim]));
+        offset = builder.create<arith::AddIOp>(loc, offset, delta);
+    }
+    Value pointer = builder.create<memref::ExtractAlignedPointerAsIndexOp>(loc, metadata.getBaseBuffer());
+    Value bytes = builder.create<arith::ConstantIntOp>(loc, desc.elementType.getIntOrFloatBitWidth() / 8, 64);
+    Value displacement = builder.create<arith::MulIOp>(loc, offset, bytes);
+    return builder.create<arith::AddIOp>(loc, i64(pointer), displacement).getResult();
+}
+
+bool isScopedSync(Operation* op) { return isa<LocalSyncOp, SyncOp, BarrierOp>(op); }
+bool usesDefaultResources(Operation* op)
+{
+    return isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
+}
+
+class LowerSyncPattern final : public RewritePattern {
+public:
+    LowerSyncPattern(MLIRContext* ctx, DenseMap<Value, Value>& cache)
+        : RewritePattern(MatchAnyOpTypeTag(), 2, ctx), cache(cache) {}
+    LogicalResult matchAndRewrite(Operation* op, PatternRewriter& rewriter) const override
+    {
+        if (!isa<LocalSyncOp, SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp, WaitUntilOp>(op))
+            return failure();
+        auto function = op->getParentOfType<func::FuncOp>();
+        auto core = function->getAttrOfType<hivm::TFuncCoreTypeAttr>(hivm::TFuncCoreTypeAttr::name);
+        bool aic = core && core.getFuncCoreType() == hivm::TFuncCoreType::AIC;
+        std::string suffix = aic ? "mix_aic" : "aiv";
+        SmallVector<Value> args;
+        std::string name;
+        if (isScopedSync(op)) {
+            auto scope = cast<CoreScopeAttr>(op->getAttr("scope")).getValue();
+            if (scope == CoreScope::MIX) suffix = aic ? "mix_aic" : "mix_aiv";
+            if (isa<LocalSyncOp>(op)) name = "tla_dist_local_sync_" + suffix;
+            else {
+                name = std::string(isa<SyncOp>(op) ? "tla_dist_sync_" : "tla_dist_barrier_") + suffix;
+                args.push_back(op->getOperand(0));
+            }
+        } else if (auto signal = dyn_cast<SignalOp>(op)) {
+            auto address = materializeSlotAddress(op, signal.getFlag(), rewriter, cache);
+            if (failed(address)) return failure();
+            int32_t code;
+            switch (signal.getOp()) { case SignalKind::SET: code = 0; break; case SignalKind::ADD: code = 1; break; }
+            args = {*address, signal.getValue(), rewriter.create<arith::ConstantIntOp>(op->getLoc(), code, 32), signal.getPeer()};
+            name = "tla_dist_signal_i32";
+        } else if (auto wait = dyn_cast<WaitUntilOp>(op)) {
+            auto address = materializeSlotAddress(op, wait.getCounter(), rewriter, cache);
+            if (failed(address)) return failure();
+            auto type = wait.getValue().getType();
+            Value threshold = wait.getValue();
+            if (type.isF32()) name = "tla_dist_wait_f32";
+            else {
+                auto integer = cast<IntegerType>(type);
+                name = std::string("tla_dist_wait_") + (integer.isUnsigned() ? "u" : "i") + std::to_string(integer.getWidth());
+                if (!integer.isSignless()) {
+                    threshold = rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), rewriter.getIntegerType(integer.getWidth()), threshold).getResult(0);
+                }
+                if (integer.getWidth() < 64) {
+                    if (integer.isUnsigned()) threshold = rewriter.create<arith::ExtUIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
+                    else threshold = rewriter.create<arith::ExtSIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
+                }
+            }
+            int32_t code;
+            switch (wait.getCmp()) {
+                case CompareKind::EQ: code = 0; break; case CompareKind::NE: code = 1; break;
+                case CompareKind::GT: code = 2; break; case CompareKind::GE: code = 3; break;
+                case CompareKind::LT: code = 4; break; case CompareKind::LE: code = 5; break;
+            }
+            args = {*address, threshold, rewriter.create<arith::ConstantIntOp>(op->getLoc(), code, 32)};
+        } else name = isa<FenceOp>(op) ? "tla_dist_fence" : "tla_dist_quiet_default";
+        SmallVector<Type> types;
+        for (Value arg : args) types.push_back(arg.getType());
+        auto callee = ::tla::getOrCreateRuntimeCall(op->getParentOfType<ModuleOp>(), name, types, {});
+        annotateAivRuntimeCall(callee);
+        if (aic) callee->setAttr(hivm::TFuncCoreTypeAttr::name,
+            hivm::TFuncCoreTypeAttr::get(rewriter.getContext(), hivm::TFuncCoreType::AIC));
+        // Kept through func-to-LLVM; never mark waits willreturn/readnone.
+        callee->setAttr("passthrough", rewriter.getArrayAttr({rewriter.getStringAttr("convergent")}));
+        auto call = rewriter.create<func::CallOp>(op->getLoc(), callee, args);
+        call->setAttr("convergent", rewriter.getUnitAttr());
+        rewriter.eraseOp(op);
+        return success();
+    }
+private:
+    DenseMap<Value, Value>& cache;
 };
 
 class LowerCommPass final : public PassWrapper<LowerCommPass, OperationPass<ModuleOp>> {
@@ -577,6 +714,7 @@ public:
         DenseMap<Value, Value> baseMemrefCache;
         RewritePatternSet patterns(&getContext());
         patterns.add<LowerRemoteCopyPattern>(&getContext(), baseMemrefCache);
+        patterns.add<LowerSyncPattern>(&getContext(), baseMemrefCache);
         patterns.add<LowerQuietPattern, LowerBarrierAllPattern>(&getContext());
         if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
             signalPassFailure();
@@ -606,6 +744,7 @@ std::unique_ptr<Pass> createLowerCommPass() { return std::make_unique<LowerCommP
 
 void registerTlaDistPasses()
 {
+    registerSyncContractPasses();
     PassRegistration<ValidateCommAutoSyncPass>();
     PassRegistration<LowerShmemPtrPass>();
     PassRegistration<PrepareCommFlagsPass>();

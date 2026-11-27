@@ -35,12 +35,15 @@ void buildTlaDistPipeline(mlir::OpPassManager& manager)
     // Resolve synchronization ids before communication consumes flag values.
     manager.addPass(createValidateCommAutoSyncPass());
     manager.addPass(::tla::createTlaLowerFuncPass());
+    manager.addPass(createValidateSyncContractPass());
     manager.addPass(::tla::createTlaInsertAutoMutexPass());
     manager.addPass(::tla::createTlaLowerExternCallPass());
     // Expose the SHMEM address ABI to the shared pointer lowering.
     manager.addPass(createLowerShmemPtrPass());
     manager.addPass(::tla::createTlaLowerPtrPass());
+    manager.addPass(createReserveSyncResourcesPass());
     manager.addPass(::tla::createTlaSplitMixedFuncPass());
+    manager.addPass(createValidateSyncPairsPass());
     manager.addPass(::tla::createTlaLowerTensorDescPass());
     // Keep these adjacent: flag lowering must see reservations before DCE.
     manager.addPass(createPrepareCommFlagsPass());

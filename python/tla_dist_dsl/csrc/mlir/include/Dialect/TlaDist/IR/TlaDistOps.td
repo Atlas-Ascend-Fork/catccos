@@ -9,6 +9,7 @@
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "Dialect/TlaDist/IR/TlaDistDialect.td"
+include "Dialect/TlaDist/IR/TlaDistEnums.td"
 
 class TlaDist_Op<string mnemonic, list<Trait> traits = []>
     : Op<TlaDistDialect, mnemonic, traits>;
@@ -58,4 +59,32 @@ def TlaDist_BarrierAllOp
     : TlaDist_Op<"barrier_all", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Synchronize all participating ranks";
   let assemblyFormat = "attr-dict";
+}
+
+// All synchronization calls are conservative global memory barriers to optimization.
+def TlaDist_LocalSyncOp : TlaDist_Op<"local_sync", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins TlaDist_CoreScope:$scope);
+  let assemblyFormat = "attr-dict";
+}
+class TlaDist_TeamOp<string name> : TlaDist_Op<name, [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins I32:$team, TlaDist_CoreScope:$scope);
+  let assemblyFormat = "$team attr-dict `:` type($team)";
+}
+def TlaDist_SyncOp : TlaDist_TeamOp<"sync">;
+def TlaDist_BarrierOp : TlaDist_TeamOp<"barrier">;
+def TlaDist_QuietDefaultOp : TlaDist_Op<"quiet_default", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let assemblyFormat = "attr-dict";
+}
+def TlaDist_FenceOp : TlaDist_Op<"fence", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let assemblyFormat = "attr-dict";
+}
+def TlaDist_SignalOp : TlaDist_Op<"signal", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins AnyType:$flag, I32:$value, I32:$peer, TlaDist_SignalKind:$op);
+  let assemblyFormat = "$flag `,` $value `,` $peer attr-dict `:` type($flag) `,` type($value) `,` type($peer)";
+  let hasVerifier = 1;
+}
+def TlaDist_WaitUntilOp : TlaDist_Op<"wait_until", [MemoryEffects<[MemRead, MemWrite]>]> {
+  let arguments = (ins AnyType:$counter, AnyType:$value, TlaDist_CompareOp:$cmp);
+  let assemblyFormat = "$counter `,` $value attr-dict `:` type($counter) `,` type($value)";
+  let hasVerifier = 1;
 }

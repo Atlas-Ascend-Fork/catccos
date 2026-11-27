@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import math
+import struct
 from typing import Any
 
 from catlass import core_api as _core
@@ -23,7 +25,7 @@ from catlass.params import AtomicMode
 from catlass.tla.typing import Tensor
 from catlass.types import PtrType
 
-from .params import CopyMode, CopyParams, CopyTransport, CopyWqePipe
+from .params import CompareOp, CoreScope, SignalOp, TEAM_WORLD, CopyMode, CopyParams, CopyTransport, CopyWqePipe
 
 
 def _resolve_integer(value: Any) -> tuple[Any, bool]:
@@ -293,9 +295,9 @@ def remote_copy(
 
 @dsl_user_op
 def quiet(
-    params: CopyParams,
+    params: CopyParams | None = None,
     *,
-    peer: IndexLike,
+    peer: IndexLike | None = None,
     ub_tensor: Tensor | None = None,
     event_id: int | None = None,
     loc: mlir_ir.Location | None = None,
@@ -309,6 +311,14 @@ def quiet(
     name = "tla_dist.quiet"
     _core._require_frontend_state(name)
     _runtime._require_enclosing_region(name, "vector")
+    if params is None:
+        if peer is not None or ub_tensor is not None or event_id is not None:
+            raise TlaLoweringError(f"{name}(): default quiet does not accept peer, ub_tensor or event_id")
+        _require_simd(name)
+        mlir_ir.Operation.create("tla_dist.quiet_default", loc=loc)
+        return
+    if peer is None:
+        raise TlaLoweringError(f"{name}: explicit QP quiet requires peer")
     if not isinstance(params, CopyParams):
         raise TlaLoweringError(f"{name} requires tla_dist.params.CopyParams")
     transport = params.transport
@@ -336,4 +346,156 @@ def barrier_all(*, loc: mlir_ir.Location | None = None) -> None:
     mlir_ir.Operation.create("tla_dist.barrier_all", loc=loc)
 
 
-__all__ = ["barrier_all", "quiet", "remote_copy"]
+
+# The numeric codes belong to the IR fields, never to Python Enum values.
+_SCOPE = {CoreScope.AIV: 0, CoreScope.MIX: 1}
+_SIGNAL = {SignalOp.SET: 0, SignalOp.ADD: 1}
+_COMPARE = {item: code for code, item in enumerate(CompareOp)}
+_WAIT_DTYPES = ("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32")
+
+
+def _enum_attr(name: str, value: Any, enum: type, mapping: dict) -> mlir_ir.IntegerAttr:
+    value = _core._resolve_bound_value(value)
+    if type(value) is not enum:
+        raise TlaLoweringError(f"{name} requires {enum.__name__} member, got {type(value).__name__}")
+    return mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), mapping[value])
+
+
+def _require_simd(name: str) -> None:
+    _runtime._require_enclosing_region(name, "vector")
+    if _runtime._has_enclosing_region("vec.func"):
+        raise TlaLoweringError(f"{name} requires the SIMD scalar body of tla.vector()")
+
+
+def _index32(name: str, value: Any, *, minimum: int, loc: Any) -> mlir_ir.Value:
+    original = _core._resolve_bound_value(value)
+    if isinstance(original, bool):
+        raise TlaLoweringError(f"{name} requires an integer, got bool")
+    if isinstance(original, Numeric) and (not type(original).is_integer or type(original).width > 32):
+        raise TlaLoweringError(f"{name} requires Index or an integer no wider than 32 bits")
+    resolved, _ = _resolve_integer(original)
+    if isinstance(resolved, int):
+        if not minimum <= resolved <= 2**31 - 1:
+            raise TlaLoweringError(f"{name} constant must be in [{minimum}, 2147483647]")
+    elif isinstance(resolved, mlir_ir.Value) and mlir_ir.IntegerType.isinstance(resolved.type):
+        if mlir_ir.IntegerType(resolved.type).width > 32:
+            raise TlaLoweringError(f"{name} runtime integer must be no wider than 32 bits")
+    return _as_integer_value(original, 32, loc=loc)
+
+
+def _collective(name: str, scope: CoreScope, team: Any | None, loc: Any) -> None:
+    _core._require_frontend_state(name)
+    attr = _enum_attr("scope", scope, CoreScope, _SCOPE)
+    if attr.value == 0:
+        _require_simd(name)
+    elif _runtime._has_enclosing_region("vector") or _runtime._has_enclosing_region("cube"):
+        raise TlaLoweringError(f"{name}: MIX scope requires the common layer outside cube/vector regions")
+    operands = [] if team is None else [_index32("team", team, minimum=-1, loc=loc)]
+    mlir_ir.Operation.create(name, operands=operands, attributes={"scope": attr}, loc=loc)
+
+
+@dsl_user_op
+def local_sync(*, scope: CoreScope = CoreScope.AIV, loc: mlir_ir.Location | None = None) -> None:
+    """Arrive at a hard local AIV or paired MIX barrier; no network completion."""
+    _collective("tla_dist.local_sync", scope, None, loc)
+
+
+@dsl_user_op
+def sync(*, team: IndexLike = TEAM_WORLD, scope: CoreScope = CoreScope.AIV,
+         loc: mlir_ir.Location | None = None) -> None:
+    """Team arrival, without completing outstanding NBI; team -1 is a no-op."""
+    _collective("tla_dist.sync", scope, team, loc)
+
+
+@dsl_user_op
+def barrier(*, team: IndexLike = TEAM_WORLD, scope: CoreScope = CoreScope.AIV,
+            loc: mlir_ir.Location | None = None) -> None:
+    """Complete each AIV's local work and the owner's default domain, then arrive."""
+    _collective("tla_dist.barrier", scope, team, loc)
+
+
+@dsl_user_op
+def fence(*, loc: mlir_ir.Location | None = None) -> None:
+    """Order the default network domain; flat AIV0 is its sole owner."""
+    _core._require_frontend_state("tla_dist.fence")
+    _require_simd("tla_dist.fence")
+    mlir_ir.Operation.create("tla_dist.fence", loc=loc)
+
+
+def _slot(name: str, tensor: Tensor) -> tuple[Any, Any, str]:
+    _core._require_category(name, "counter", tensor, "tensor", 0)
+    result = _core._as_value(tensor)
+    desc = _tensor_descriptor(result)
+    if desc is None or desc.addrspace.lower() != "gm":
+        raise TlaLoweringError(f"{name} requires a symmetric GM tensor descriptor")
+    shape = _core._flatten_tla_tuple(desc.shape)
+    if len(shape) not in (1, 2) or any(dim != 1 for dim in shape):
+        raise TlaLoweringError(f"{name} requires a provably single-slot shape (1,) or (1,1)")
+    if desc.layout_tag.replace("_", "").lower() not in ("rowmajor", "columnmajor"):
+        raise TlaLoweringError(f"{name} requires a linear layout")
+    return result, desc, str(desc.element_type)
+
+
+def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
+    value = _core._resolve_bound_value(value)
+    scalar_type = Numeric.from_dtype_token(dtype)
+    if isinstance(value, Numeric):
+        if type(value) is not scalar_type:
+            raise TlaLoweringError(f"{name}: runtime threshold must match counter dtype {dtype}")
+        constant = value.value
+        if not isinstance(constant, (int, float, bool)):
+            return value.ir_value()
+        value = constant
+    if dtype == "f32":
+        if type(value) not in (int, float):
+            raise TlaLoweringError(f"{name}: Float32 threshold requires int or float")
+        try:
+            value = struct.unpack("f", struct.pack("f", value))[0]
+        except OverflowError:
+            value = math.copysign(math.inf, value)
+        if math.isnan(value):
+            raise TlaLoweringError(f"{name}: NaN thresholds are unsupported")
+    else:
+        if type(value) is not int:
+            raise TlaLoweringError(f"{name}: integer threshold requires int (not bool)")
+        bits = int(dtype[1:])
+        low, high = (0, 2**bits - 1) if dtype.startswith("u") else (-2**(bits-1), 2**(bits-1)-1)
+        if not low <= value <= high:
+            raise TlaLoweringError(f"{name}: threshold outside {dtype} range [{low}, {high}]")
+    return scalar_type(value).ir_value()
+
+
+@dsl_user_op
+def signal(flag: Tensor, value: Any, *, peer: IndexLike, op: SignalOp = SignalOp.SET,
+           loc: mlir_ir.Location | None = None) -> None:
+    """Publish Int32 SET or MTE ADD to the peer's corresponding symmetric slot."""
+    name = "tla_dist.signal"
+    _core._require_frontend_state(name)
+    _require_simd(name)
+    attr = _enum_attr("op", op, SignalOp, _SIGNAL)
+    slot, _, dtype = _slot(name, flag)
+    if dtype != "i32":
+        raise TlaLoweringError(f"{name} requires Int32 flag")
+    mlir_ir.Operation.create(name, operands=[slot, _threshold(name, value, dtype, loc),
+        _index32("peer", peer, minimum=0, loc=loc)], attributes={"op": attr}, loc=loc)
+
+
+@dsl_user_op
+def wait_until(counter: Tensor, value: Numeric | int | float, *, cmp: CompareOp = CompareOp.EQ,
+               loc: mlir_ir.Location | None = None) -> None:
+    """Wait on the local typed slot; counter/value must be non-NaN for Float32.
+
+    This operation refreshes the counter, and does not acquire arbitrary payload cachelines.
+    """
+    name = "tla_dist.wait_until"
+    _core._require_frontend_state(name)
+    _require_simd(name)
+    attr = _enum_attr("cmp", cmp, CompareOp, _COMPARE)
+    slot, _, dtype = _slot(name, counter)
+    if dtype not in _WAIT_DTYPES:
+        raise TlaLoweringError(f"{name}: unsupported counter dtype {dtype}")
+    mlir_ir.Operation.create(name, operands=[slot, _threshold(name, value, dtype, loc)],
+        attributes={"cmp": attr}, loc=loc)
+
+
+__all__ = ["barrier_all", "quiet", "remote_copy", "shmem_ptr", "local_sync", "sync", "barrier", "fence", "signal", "wait_until"]

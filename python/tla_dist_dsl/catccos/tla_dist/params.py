@@ -11,12 +11,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, unique
 from typing import Any
 
 from catlass import params as _params
 from catlass.core_api import IndexLike
 from catlass.params import AtomicMode
+
+
+@unique
+class CoreScope(Enum):
+    AIV = "aiv"
+    MIX = "mix"
+
+
+@unique
+class SignalOp(Enum):
+    SET = "set"
+    ADD = "add"
+
+
+@unique
+class CompareOp(Enum):
+    EQ = "eq"
+    NE = "ne"
+    GT = "gt"
+    GE = "ge"
+    LT = "lt"
+    LE = "le"
+
+
+TEAM_WORLD = 0
 
 
 class CopyMode(str, Enum):
@@ -79,4 +104,4 @@ def __dir__() -> list[str]:
     return sorted(set(globals()) | set(dir(_params)))
 
 
-__all__ = ["AtomicMode", "CopyMode", "CopyParams", "CopyTransport", "CopyWqePipe"]
+__all__ = ["CoreScope", "SignalOp", "CompareOp", "TEAM_WORLD", "AtomicMode", "CopyMode", "CopyParams", "CopyTransport", "CopyWqePipe"]

@@ -17,6 +17,7 @@ from catlass.base_dsl.jit_executor import JitCompiledFunction
 from catlass.dsl import TlaJitFunction, _bind_kernel_call_args
 from catlass.execution import TlaRuntimeUnavailableError, TlaUnsupportedAbiError
 
+from ._sync_resources import SYNC_RESOURCE_ABI
 from .compiler_bridge import bridge_path, build_kernel_abi, lower_tlair_to_mlir_cli
 
 _COMPILE_LOCK = threading.RLock()
@@ -79,12 +80,13 @@ def _resolve_base_bitcode(runtime: Any) -> str:
                 return candidate.resolve()
         return None
 
-    aic = find_packaged("meta_op.aic.c310.bc")
+    aic_kind = "mix_aic" if runtime.kernel_mode == "mix" else "aic"
+    aic = find_packaged(f"meta_op.{aic_kind}.c310.bc")
     # A mixed kernel must never fall back to the pure-AIV soft barrier image.
     aiv_kind = "mix_aiv" if runtime.kernel_mode == "mix" else "aiv"
     aiv = find_packaged(f"meta_op.{aiv_kind}.c310.bc")
     if aic is None:
-        raw_aic = build_dir / "tla" / "bc" / "meta_op.aic.c310.bc"
+        raw_aic = build_dir / "bc" / f"meta_op.{aic_kind}.c310.bc"
         if raw_aic.is_file():
             aic = raw_aic.resolve()
     if aiv is None:
@@ -164,7 +166,7 @@ def _catccos_execution_hooks() -> Iterator[None]:
         template_runtime = replace(runtime, kernel_mode="mix") if runtime.kernel_mode == "aic" else runtime
         template = _resolve_base_bitcode(template_runtime)
         kwargs["tlair_mlir"] = (
-            f"{kwargs['tlair_mlir']}\n// tla_dist-template-bitcode-sha256: {_bitcode_fingerprint(template)}"
+            f"{kwargs['tlair_mlir']}\n// tla_dist-sync-resource-abi: {SYNC_RESOURCE_ABI}\n// tla_dist-template-bitcode-sha256: {_bitcode_fingerprint(template)}"
         )
         return original_cache_key(**kwargs)
 

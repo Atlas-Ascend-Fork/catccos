@@ -137,6 +137,8 @@ add_custom_command(
   OUTPUT
     "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Ops.h.inc"
     "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Ops.cpp.inc"
+    "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.h.inc"
+    "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.cpp.inc"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${TLA_DIST_TABLEGEN_OUTPUT_DIR}"
   COMMAND "${TLA_DIST_MLIR_TABLEGEN_EXE}" --gen-op-decls "${TLA_DIST_TD_FILE}"
           ${TLA_DIST_TABLEGEN_INCLUDE_FLAGS}
@@ -144,13 +146,20 @@ add_custom_command(
   COMMAND "${TLA_DIST_MLIR_TABLEGEN_EXE}" --gen-op-defs "${TLA_DIST_TD_FILE}"
           ${TLA_DIST_TABLEGEN_INCLUDE_FLAGS}
           -o "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Ops.cpp.inc"
+  COMMAND "${TLA_DIST_MLIR_TABLEGEN_EXE}" --gen-enum-decls "${TLA_DIST_TD_FILE}"
+          ${TLA_DIST_TABLEGEN_INCLUDE_FLAGS} -o "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.h.inc"
+  COMMAND "${TLA_DIST_MLIR_TABLEGEN_EXE}" --gen-enum-defs "${TLA_DIST_TD_FILE}"
+          ${TLA_DIST_TABLEGEN_INCLUDE_FLAGS} -o "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.cpp.inc"
   COMMAND_EXPAND_LISTS
   DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/Dialect/TlaDist/IR/TlaDistEnums.td"
     "${TLA_DIST_TD_FILE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/include/Dialect/TlaDist/IR/TlaDistDialect.td"
   VERBATIM
 )
 add_custom_target(TlaDistTblgen DEPENDS
+  "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.h.inc"
+  "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Enums.cpp.inc"
   "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Ops.h.inc"
   "${TLA_DIST_TABLEGEN_OUTPUT_DIR}/Ops.cpp.inc"
 )

@@ -16,5 +16,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include "tla_dist/Enums.h.inc"
+
 #define GET_OP_CLASSES
 #include "tla_dist/Ops.h.inc"

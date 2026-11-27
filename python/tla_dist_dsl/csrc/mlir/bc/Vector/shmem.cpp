@@ -255,3 +255,87 @@ REGISTER_SHMEM_REMOTE_COPY(put, Put, Mte, float)
 
 #endif
 }
+
+// Synchronization ABI v1. New calls use public SHMEM entry points only.
+namespace {
+CATLASS_DEVICE void tlaDistCompleteLocal() {
+    AscendC::PipeBarrier<PIPE_ALL>();
+    AscendC::GlobalTensor<uint8_t> global;
+    __asm__ __volatile__("" ::: "memory");
+    AscendC::DataCacheCleanAndInvalid<uint8_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
+        AscendC::DcciDst::CACHELINE_OUT>(global);
+    __asm__ __volatile__("" ::: "memory");
+}
+CATLASS_DEVICE bool tlaDistDefaultOwner() { return AscendC::GetBlockIdx() == 0; }
+CATLASS_DEVICE int tlaDistCompare(int code) {
+    switch (code) {
+        case 0: return ACLSHMEM_CMP_EQ; case 1: return ACLSHMEM_CMP_NE;
+        case 2: return ACLSHMEM_CMP_GT; case 3: return ACLSHMEM_CMP_GE;
+        case 4: return ACLSHMEM_CMP_LT; case 5: return ACLSHMEM_CMP_LE;
+        default: trap(); return ACLSHMEM_CMP_EQ;
+    }
+}
+}
+extern "C" {
+CATLASS_DEVICE void tla_dist_local_sync_aiv() {
+#ifdef __CCE_AICORE_ENABLE_MIX__
+    AscendC::SyncAll<true>();
+#else
+    // This symbol is deliberately absent from software-barrier execution.
+    trap();
+#endif
+}
+CATLASS_DEVICE void tla_dist_sync_aiv(int32_t team) { if (team != -1) aclshmem_sync(team); }
+CATLASS_DEVICE void tla_dist_barrier_aiv(int32_t team) {
+    if (team == -1) return;
+    tlaDistCompleteLocal(); aclshmem_barrier(team);
+}
+#ifdef __CCE_AICORE_ENABLE_MIX__
+CATLASS_DEVICE void tla_dist_local_sync_mix_aiv() { AscendC::SyncAll<false>(); }
+CATLASS_DEVICE void tla_dist_sync_mix_aiv(int32_t team) {
+    if (team == -1) return;
+    AscendC::SyncAll<false>(); aclshmem_sync(team); AscendC::SyncAll<false>();
+}
+CATLASS_DEVICE void tla_dist_barrier_mix_aiv(int32_t team) {
+    if (team == -1) return;
+    tlaDistCompleteLocal(); AscendC::SyncAll<false>(); aclshmem_barrier(team); AscendC::SyncAll<false>();
+}
+#endif
+CATLASS_DEVICE void tla_dist_quiet_default() {
+    if (!tlaDistDefaultOwner()) { trap(); return; }
+    aclshmem_quiet();
+}
+CATLASS_DEVICE void tla_dist_fence() {
+    if (!tlaDistDefaultOwner()) { trap(); return; }
+    aclshmem_fence();
+}
+CATLASS_DEVICE void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op, int32_t peer) {
+    // ADD requires a directly mapped peer. SET may enter RoCE only on the
+    // unique flat AIV0 owner. aclshmem_ptr is the public topology check.
+    bool mapped = aclshmem_ptr(reinterpret_cast<__gm__ void*>(addr), peer) != nullptr;
+    if ((!mapped && op == 1) || (!mapped && !tlaDistDefaultOwner())) { trap(); return; }
+    int backendOp;
+    switch (op) {
+        case 0: backendOp = ACLSHMEM_SIGNAL_SET; break;
+        case 1: backendOp = ACLSHMEM_SIGNAL_ADD; break;
+        default: trap(); return;
+    }
+    aclshmemx_signal_op(reinterpret_cast<__gm__ int32_t*>(addr), value, backendOp, peer);
+}
+// Small-integer thresholds use a 64-bit C ABI, avoiding target-specific
+// signext/zeroext attributes. UInt64 never passes through a signed value.
+#define TLA_DIST_WAIT(NAME, BACKEND, TYPE, ABI) \
+CATLASS_DEVICE void tla_dist_wait_##NAME(uint64_t addr, ABI value, int32_t cmp) { \
+    aclshmem_##BACKEND##_wait_until(reinterpret_cast<__gm__ TYPE*>(addr), tlaDistCompare(cmp), static_cast<TYPE>(value)); \
+}
+TLA_DIST_WAIT(i8, int8, int8_t, int64_t)
+TLA_DIST_WAIT(i16, int16, int16_t, int64_t)
+TLA_DIST_WAIT(i32, int32, int32_t, int64_t)
+TLA_DIST_WAIT(i64, int64, int64_t, int64_t)
+TLA_DIST_WAIT(u8, uint8, uint8_t, uint64_t)
+TLA_DIST_WAIT(u16, uint16, uint16_t, uint64_t)
+TLA_DIST_WAIT(u32, uint32, uint32_t, uint64_t)
+TLA_DIST_WAIT(u64, uint64, uint64_t, uint64_t)
+TLA_DIST_WAIT(f32, float, float, float)
+#undef TLA_DIST_WAIT
+}
