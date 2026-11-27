@@ -548,8 +548,8 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
     if dtype == "f32":
         if type(value) not in (int, float):
             raise TlaLoweringError(f"{name}: Float32 threshold requires int or float")
-        original_finite = math.isfinite(value)
         try:
+            original_finite = math.isfinite(value)
             value = struct.unpack("f", struct.pack("f", value))[0]
         except (OverflowError, struct.error) as error:
             raise TlaLoweringError(

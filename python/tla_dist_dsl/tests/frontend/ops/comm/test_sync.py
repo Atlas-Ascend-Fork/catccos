@@ -90,6 +90,7 @@ def test_wait_boundaries(dtype, value):
         (tla.Int64, 2**63),
         (tla.Float32, float("nan")),
         (tla.Float32, 1e39),
+        (tla.Float32, 10**1000),
         (tla.Int32, True),
         (tla.Float32, False),
         (tla.Int32, tla.UInt32(1)),
