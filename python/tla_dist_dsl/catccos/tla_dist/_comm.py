@@ -451,8 +451,8 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
             raise TlaLoweringError(f"{name}: Float32 threshold requires int or float")
         try:
             value = struct.unpack("f", struct.pack("f", value))[0]
-        except OverflowError:
-            value = math.copysign(math.inf, value)
+        except (OverflowError, struct.error) as error:
+            raise TlaLoweringError(f"{name}: finite threshold outside Float32 range") from error
         if math.isnan(value):
             raise TlaLoweringError(f"{name}: NaN thresholds are unsupported")
     else:

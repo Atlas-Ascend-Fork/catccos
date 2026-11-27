@@ -83,7 +83,7 @@ def _resolve_base_bitcode(runtime: Any) -> str:
     aic_kind = "mix_aic" if runtime.kernel_mode == "mix" else "aic"
     aic = find_packaged(f"meta_op.{aic_kind}.c310.bc")
     # A mixed kernel must never fall back to the pure-AIV soft barrier image.
-    aiv_kind = "mix_aiv" if runtime.kernel_mode == "mix" else "aiv"
+    aiv_kind = "mix_aiv" if runtime.kernel_mode in ("mix", "mix_aiv") else "aiv"
     aiv = find_packaged(f"meta_op.{aiv_kind}.c310.bc")
     if aic is None:
         raw_aic = build_dir / "bc" / f"meta_op.{aic_kind}.c310.bc"
@@ -126,6 +126,14 @@ def _catccos_execution_hooks() -> Iterator[None]:
     original_bridge_path = _execution.resolve_bridge_extension_path
     original_bitcode = _execution._resolve_hivm_template_bitcode
     original_cache_key = _execution._cache_key
+    original_infer = _execution._resolve_compile_option_from_lowered_mlir
+
+    def infer_options(runtime: Any, mlir_text: str, *, has_logical_mixed_handoff: bool) -> Any:
+        result = original_infer(runtime, mlir_text, has_logical_mixed_handoff=has_logical_mixed_handoff)
+        if "tla_dist.vector_hard_sync" in mlir_text:
+            result = replace(result, kernel_mode="mix_aiv", arch_scope="aiv.c310")
+        return result
+
 
     def lower_driver(
         *,
@@ -164,6 +172,8 @@ def _catccos_execution_hooks() -> Iterator[None]:
         # Cache lookup precedes mixed-function splitting. An initial AIC target
         # can become MIX, so include its mixed AIV template in the fingerprint.
         template_runtime = replace(runtime, kernel_mode="mix") if runtime.kernel_mode == "aic" else runtime
+        if runtime.kernel_mode == "aiv" and any(f'"tla_dist.{name}"' in kwargs["tlair_mlir"] for name in ("local_sync", "sync", "barrier")):
+            template_runtime = replace(runtime, kernel_mode="mix_aiv")
         template = _resolve_base_bitcode(template_runtime)
         kwargs["tlair_mlir"] = (
             f"{kwargs['tlair_mlir']}\n// tla_dist-sync-resource-abi: {SYNC_RESOURCE_ABI}\n// tla_dist-template-bitcode-sha256: {_bitcode_fingerprint(template)}"
@@ -174,6 +184,7 @@ def _catccos_execution_hooks() -> Iterator[None]:
     _execution.resolve_bridge_extension_path = bridge_path
     _execution._resolve_hivm_template_bitcode = resolve_bitcode
     _execution._cache_key = cache_key
+    _execution._resolve_compile_option_from_lowered_mlir = infer_options
     try:
         yield
     finally:
@@ -181,6 +192,7 @@ def _catccos_execution_hooks() -> Iterator[None]:
         _execution.resolve_bridge_extension_path = original_bridge_path
         _execution._resolve_hivm_template_bitcode = original_bitcode
         _execution._cache_key = original_cache_key
+        _execution._resolve_compile_option_from_lowered_mlir = original_infer
 
 
 class CompileCallable:

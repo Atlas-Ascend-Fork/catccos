@@ -514,7 +514,7 @@ public:
         if (defaults) getOperation().walk([&](::tla::FlagOp flag) {
             auto src = flag->getAttrOfType<::tla::PipeAttr>("src_pipe");
             auto dst = flag->getAttrOfType<::tla::PipeAttr>("dst_pipe");
-            if (flag.getId() == 0 && src && dst && defaultDirection(src.getValue(), dst.getValue())) {
+            if (flag.getId() == 0 && src && dst && defaultDirection(src.getPipe(), dst.getPipe())) {
                 flag.emitOpError("event 0 in this pipe direction is reserved by SHMEM synchronization");
                 conflict = true;
             }

@@ -23,6 +23,7 @@ std::unique_ptr<mlir::Pass> createLowerCommPass();
 std::unique_ptr<mlir::Pass> createValidateSyncContractPass();
 std::unique_ptr<mlir::Pass> createReserveSyncResourcesPass();
 std::unique_ptr<mlir::Pass> createValidateSyncPairsPass();
+std::unique_ptr<mlir::Pass> createFinalizeVectorSyncMetadataPass();
 void registerSyncContractPasses();
 void registerTlaDistPasses();
 void buildTlaDistPipeline(mlir::OpPassManager& manager);

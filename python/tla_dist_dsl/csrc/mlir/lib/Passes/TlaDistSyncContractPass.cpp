@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
+
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/DenseMap.h"
 using namespace mlir;
@@ -94,6 +95,24 @@ public:
         if (result.wasInterrupted()) signalPassFailure();
     }
 };
+// The single-vector hard barrier uses a real MIX_AIV_1_0 ELF. Preserve the
+// AIV function (no artificial cube), with explicit zero-cube/one-vector ratio.
+class FinalizeVectorSyncMetadataPass final : public PassWrapper<FinalizeVectorSyncMetadataPass, OperationPass<ModuleOp>> {
+public:
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FinalizeVectorSyncMetadataPass)
+    StringRef getArgument() const override { return "tla_dist-finalize-vector-sync-metadata"; }
+    void runOnOperation() override {
+        bool found = false;
+        getOperation().walk([&](func::FuncOp function) {
+            if (!function->hasAttr("tla_dist.vector_hard_sync")) return;
+            function->setAttr(hivm::TCoreRatioAttr::name, hivm::TCoreRatioAttr::get(&getContext(), 0, 1));
+            function->setAttr("mix_mode", StringAttr::get(&getContext(), "mix"));
+            found = true;
+        });
+        if (found) getOperation()->setAttr(hivm::TModuleCoreTypeAttr::name,
+            hivm::TModuleCoreTypeAttr::get(&getContext(), hivm::TModuleCoreType::MIX));
+    }
+};
 class ValidateSyncPairsPass final : public PassWrapper<ValidateSyncPairsPass, OperationPass<ModuleOp>> {
 public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateSyncPairsPass)
@@ -128,7 +147,9 @@ public:
 std::unique_ptr<Pass> createValidateSyncContractPass() { return std::make_unique<ValidateSyncContractPass>(); }
 std::unique_ptr<Pass> createReserveSyncResourcesPass() { return std::make_unique<ReserveSyncResourcesPass>(); }
 std::unique_ptr<Pass> createValidateSyncPairsPass() { return std::make_unique<ValidateSyncPairsPass>(); }
+std::unique_ptr<Pass> createFinalizeVectorSyncMetadataPass() { return std::make_unique<FinalizeVectorSyncMetadataPass>(); }
 void registerSyncContractPasses() {
+    PassRegistration<FinalizeVectorSyncMetadataPass>();
     PassRegistration<ValidateSyncContractPass>(); PassRegistration<ReserveSyncResourcesPass>(); PassRegistration<ValidateSyncPairsPass>();
 }
 }

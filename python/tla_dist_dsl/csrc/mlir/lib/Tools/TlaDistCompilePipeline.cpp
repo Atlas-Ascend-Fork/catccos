@@ -79,6 +79,7 @@ void buildTlaDistPipeline(mlir::OpPassManager& manager)
     }
     manager.addPass(::tla::createTlaLowerAVEToRegbaseIntrinsPass());
     manager.addPass(mlir::createConvertSCFToCFPass());
+    manager.addPass(createFinalizeVectorSyncMetadataPass());
 }
 
 } // namespace tla_dist

@@ -19,7 +19,11 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "catccos/tla_dist/distribute
 
 
 def _load_distributed() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("tla_dist_distributed_test", MODULE_PATH)
+    package_name = "tla_dist_distributed_test"
+    package = ModuleType(package_name)
+    package.__path__ = [str(MODULE_PATH.parent)]
+    sys.modules[package_name] = package
+    spec = importlib.util.spec_from_file_location(package_name + ".distributed", MODULE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -52,6 +56,10 @@ class FakeShmem(ModuleType):
     def aclshmemx_init_attr(self, mode, attr):
         self.events.append(("init_attr", mode, attr, attr.option_attr.data_op_engine_type))
         return self.init_status
+
+    def aclshmemx_set_mte_config(self, offset, size, event):
+        self.events.append(("mte_config", offset, size, event))
+        return getattr(self, "mte_status", 0)
 
     def aclshmem_barrier_all(self):
         self.events.append("barrier")
@@ -103,9 +111,10 @@ def test_uid_initialization_selects_transport(monkeypatch, transport, engine, qp
     uid = b"uid\x00with-null"
     runtime = distributed.ShmemRuntime(uid, 1, 3, 8192, transport=transport, qp_num=qp_num).initialize()
     if transport == "mte":
-        assert fake.events == [("init", 1, 3, 8192, uid)]
+        assert fake.events == [("init", 1, 3, 8192, uid), ("mte_config", 192*1024, 16*1024, 0)]
     else:
-        setup, qp_config, init = fake.events
+        setup, qp_config, init, config = fake.events
+        assert config == ("mte_config", 192*1024, 16*1024, 0)
         assert qp_config == ("set_qp_num", engine, qp_num)
         assert setup[:4] == ("set_attr", 1, 3, 8192)
         assert setup[4].data == uid
@@ -169,3 +178,15 @@ def test_uid_initialization_failure_keeps_runtime_uninitialized(monkeypatch, tra
         "qp": ["set_attr", "set_qp_num"],
         "init": ["set_attr", "set_qp_num", "init_attr"],
     }[stage]
+
+
+def test_resource_configuration_failure_finalizes_instance(monkeypatch):
+    distributed = _load_distributed()
+    fake = FakeShmem()
+    fake.mte_status = 17
+    monkeypatch.setitem(sys.modules, "shmem", fake)
+    runtime = distributed.ShmemRuntime(b"uid", 0, 2, 4096)
+    with pytest.raises(distributed.ShmemRuntimeError, match="configuration failed"):
+        runtime.initialize()
+    assert not runtime._initialized
+    assert fake.events[-1] == "finalize"

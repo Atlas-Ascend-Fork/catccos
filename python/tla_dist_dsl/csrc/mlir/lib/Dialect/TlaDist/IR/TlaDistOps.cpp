@@ -12,6 +12,7 @@
 #include "Passes/TlaTensorDescriptor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "mlir/IR/Matchers.h"
 
 #include "tla_dist/Enums.cpp.inc"
 
@@ -52,6 +53,9 @@ mlir::LogicalResult verifySlot(mlir::Operation* op, mlir::Value slot, mlir::Valu
         integer.getWidth() == 32 || integer.getWidth() == 64));
     if (!valid || (signal && (!dtype.isSignlessInteger(32))))
         return op->emitOpError(signal ? "signal requires Int32" : "unsupported wait counter dtype");
+    mlir::APFloat constant(0.0f);
+    if (dtype.isF32() && mlir::matchPattern(value, mlir::m_ConstantFloat(&constant)) && constant.isNaN())
+        return op->emitOpError("NaN thresholds are unsupported");
     return mlir::success();
 }
 }
