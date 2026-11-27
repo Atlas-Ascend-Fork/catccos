@@ -57,6 +57,7 @@ def main():
         if args.case == "wait-never" or runtime.rank == 0:
             artifact(*launch_args, block_num=1)
             runtime.torch.npu.synchronize()
+            print(f"NEGATIVE_COMPLETED {args.case} rank={runtime.rank}", flush=True)
             raise RuntimeError("negative kernel returned unexpectedly")
         runtime.dist.barrier()
 
