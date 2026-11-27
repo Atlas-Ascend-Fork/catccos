@@ -106,24 +106,23 @@ public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReserveSyncResourcesPass)
     StringRef getArgument() const override { return "tla_dist-reserve-sync-resources"; }
     void runOnOperation() override {
-        auto result = getOperation().walk([&](func::FuncOp function) {
-            bool needed = false;
-            function.walk([&](Operation* op) { needed |= resources(op); });
-            if (!needed) return WalkResult::advance();
-            for (StringRef key : {"tla.ub_static_bytes", "tla.ub_dynamic_base"}) {
-                auto size = function->getAttrOfType<IntegerAttr>(key);
-                if (size && size.getInt() > userUbLimit) {
-                    function.emitOpError("SHMEM synchronization reserves UB from byte 192512; user UB exceeds 188 KiB");
-                    return WalkResult::interrupt();
-                }
+        ModuleOp module = getOperation();
+        bool needed = false;
+        module.walk([&](Operation* op) { needed |= resources(op); });
+        if (!needed) return;
+        // Catlass records UB accounting on the module. This is the exact
+        // metadata consumed by compiler_bridge and the launch-sized UB guard.
+        for (StringRef key : {"tla.ub_static_bytes", "tla.ub_dynamic_base"}) {
+            auto size = module->getAttrOfType<IntegerAttr>(key);
+            if (size && size.getInt() > userUbLimit) {
+                module.emitOpError("SHMEM synchronization reserves UB from byte 192512; user UB exceeds 188 KiB");
+                signalPassFailure(); return;
             }
-            auto budget = function->getAttrOfType<IntegerAttr>("tla.ub_programmable_bytes");
-            function->setAttr("tla.ub_programmable_bytes", IntegerAttr::get(IntegerType::get(&getContext(), 64),
-                budget ? std::min(budget.getInt(), userUbLimit) : userUbLimit));
-            function->setAttr("tla_dist.sync_resource_abi", IntegerAttr::get(IntegerType::get(&getContext(), 32), 1));
-            return WalkResult::advance();
-        });
-        if (result.wasInterrupted()) signalPassFailure();
+        }
+        auto budget = module->getAttrOfType<IntegerAttr>("tla.ub_programmable_bytes");
+        module->setAttr("tla.ub_programmable_bytes", IntegerAttr::get(IntegerType::get(&getContext(), 64),
+            budget ? std::min(budget.getInt(), userUbLimit) : userUbLimit));
+        module->setAttr("tla_dist.sync_resource_abi", IntegerAttr::get(IntegerType::get(&getContext(), 32), 1));
     }
 };
 // The single-vector hard barrier uses a real MIX_AIV_1_0 ELF. Preserve the
@@ -138,6 +137,9 @@ public:
             if (!function->hasAttr("tla_dist.vector_hard_sync")) return;
             function->setAttr(hivm::TCoreRatioAttr::name, hivm::TCoreRatioAttr::get(&getContext(), 0, 1));
             function->setAttr("mix_mode", StringAttr::get(&getContext(), "mix"));
+            // Runtime MIX entry lookup uses the original logical name, while
+            // the ELF's single vector export carries this manufacturer suffix.
+            function.setSymName((function.getSymName() + "_mix_aiv").str());
             found = true;
         });
         if (found) getOperation()->setAttr(hivm::TModuleCoreTypeAttr::name,

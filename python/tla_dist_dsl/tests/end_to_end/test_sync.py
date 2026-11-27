@@ -205,12 +205,13 @@ def _compile(runtime,kernel,args,*,mixed=False):
     return artifact
 
 
-def _launch(runtime,artifact,args,blocks):
+def _launch(runtime,artifact,args,blocks,*,local_only=False):
     runtime.torch.npu.synchronize(); runtime.shmem.barrier_all()
     error=None
     try:
-        artifact(*args,block_num=blocks)
-        runtime.torch.npu.synchronize()
+        if not local_only or runtime.rank==0:
+            artifact(*args,block_num=blocks)
+            runtime.torch.npu.synchronize()
     except Exception as exc: error=f"launch: {type(exc).__name__}: {exc}"
     runtime.check_errors(error)
 
@@ -249,11 +250,11 @@ def _wait(runtime,case):
                 if seen[0] != (1 if runtime.rank != producer else 0): error=f"wait return marker mismatch {seen}"
                 if case.mixed and seen[1] != 2: error=f"cube progress missing {seen}"
                 runtime.check_errors(error)
-                if runtime.rank == 0: print(f"PASS subcase producer={producer} delayed={delayed}",flush=True)
+                if runtime.rank == 0: print(f"DETAIL producer={producer} delayed={delayed}",flush=True)
     finally: runtime.shmem.free(raw)
 
 
-def _run(runtime,item):
+def _run(runtime,item,*,local_only=False):
     torch=runtime.torch
     if item[0]=="wait": return _wait(runtime,item[1])
     if item[0]=="collective":
@@ -261,10 +262,10 @@ def _run(runtime,item):
         observed=torch.zeros((1,128),dtype=torch.int32,device=f"npu:{os.environ['LOCAL_RANK']}")
         args=(_view(observed),case,tla.Int32(team))
         artifact=_compile(runtime,collective,args,mixed=case.startswith("mix"))
-        _launch(runtime,artifact,(args[0],args[2]),blocks)
+        _launch(runtime,artifact,(args[0],args[2]),blocks,local_only=local_only)
         actual=observed.cpu()[0].tolist()
         expected=blocks*(2 if case.startswith("mix") else 1)
-        runtime.check_errors(None if actual[0]==3 and sum(actual[2:])==expected else f"participant markers {actual}")
+        runtime.check_errors(None if (local_only and runtime.rank!=0) or (actual[0]==3 and sum(actual[2:])==expected) else f"participant markers {actual}")
     elif item[0]=="signal":
         _,add,blocks=item
         flag=runtime.shmem.symmetric_tensor((1,16),torch.int32)
@@ -322,8 +323,13 @@ def main():
     with initialized_runtime() as runtime:
         for name,item in cases:
             if runtime.rank==0: print(f"RUN  {name}",flush=True)
-            _run(runtime,item)
+            local_only=name.startswith("p0/")
+            _run(runtime,item,local_only=local_only)
+            if not local_only or runtime.rank==0:
+                print(f"DEVICE_PASS {name} rank={runtime.rank} launches={4 if item[0]=='wait' else 1}",flush=True)
+            runtime.dist.barrier()
             if runtime.rank==0: print(f"PASS {name}",flush=True)
+        if runtime.rank==0: print(f"{len(cases)} passed",flush=True)
     return 0
 
 if __name__=="__main__": raise SystemExit(main())

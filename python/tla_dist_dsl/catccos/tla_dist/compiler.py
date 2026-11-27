@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import catlass.execution as _execution
-from catlass.base_dsl.jit_executor import JitCompiledFunction
+from catlass.base_dsl.jit_executor import JitCompiledFunction, JitExecutor
 from catlass.dsl import TlaJitFunction, _bind_kernel_call_args
 from catlass.execution import TlaRuntimeUnavailableError, TlaUnsupportedAbiError
 
@@ -195,6 +195,51 @@ def _catccos_execution_hooks() -> Iterator[None]:
         _execution._resolve_compile_option_from_lowered_mlir = original_infer
 
 
+class _SyncExecutor(JitExecutor):
+    def __call__(self, *args: Any, block_num: int | None = None, **kwargs: Any) -> Any:
+        from ._sync_runtime import resident_block_limit, launch_sync_kernel
+        blocks = 1 if block_num is None else block_num
+        if type(blocks) is not int or blocks <= 0:
+            raise TlaUnsupportedAbiError("hard synchronization requires a positive integer block_num")
+        limit = resident_block_limit(self.device, paired=self.jit_module.is_mixed)
+        if blocks > limit:
+            raise TlaUnsupportedAbiError(f"hard-sync block_num={blocks} exceeds simultaneously resident limit {limit}")
+        # Dispatch by exact function handle so unrelated Catlass kernels retain
+        # their ordinary launcher even when called concurrently by another user.
+        with _COMPILE_LOCK:
+            original = _execution.launch_kernel
+            def dispatch(**launch_args: Any) -> None:
+                if launch_args["function_handle"] == self.function_handle:
+                    launch_sync_kernel(**launch_args)
+                else:
+                    original(**launch_args)
+            _execution.launch_kernel = dispatch
+            try:
+                return super().__call__(*args, block_num=blocks, **kwargs)
+            finally:
+                _execution.launch_kernel = original
+
+
+class SyncCompiledFunction(JitCompiledFunction):
+    """Explicit one-sided MIX runtime handoff with a logical entrypoint.
+
+    The object retains the compiler's mix_aiv mode for diagnostics/cache identity.
+    The native binary loader consumes the ELF's MIX metadata without a magic
+    override, and queries the logical name preceding the sole _mix_aiv export.
+    It launches one vector participant per logical block, never a dummy AIC.
+    """
+
+    def _get_executor(self) -> JitExecutor:
+        if self._executor is None:
+            with self._executor_lock:
+                if self._executor is None:
+                    module = self.jit_module
+                    if module.kernel_mode == "mix_aiv":
+                        module = replace(module, kernel_mode="mix")
+                    self._executor = _SyncExecutor(module)
+        return self._executor
+
+
 class CompileCallable:
     """Compile a kernel using either call arguments or explicit ``type_args``."""
 
@@ -220,6 +265,10 @@ class CompileCallable:
                 type_args=type_args,
                 decorator_location=func.decorator_location,
             )
+        if artifact.kernel_mode == "mix_aiv" or (isinstance(artifact, JitCompiledFunction) and any(
+            name in artifact.__mlir__ for name in ("tla_dist_local_sync_", "tla_dist_sync_", "tla_dist_barrier_")
+        )):
+            return SyncCompiledFunction(jit_module=artifact.jit_module, artifacts=artifact.artifacts)
         return artifact
 
 

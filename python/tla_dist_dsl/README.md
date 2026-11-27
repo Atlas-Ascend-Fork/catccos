@@ -77,7 +77,7 @@ submissions on the same AIV may reuse one ID: submission completes its local
 pipeline synchronization before returning, while the GM data transfer may
 remain in flight until `quiet` completes.
 
-All communication operations require a `tla.vector()` region. For example:
+Remote copy, explicit QP quiet, shmem_ptr and the legacy barrier_all require a `tla.vector()` region. For example:
 
 ```python
 copy_done = tla.flag("copy_done", tla.arch.MTE3, tla.arch.MTE2)
@@ -281,3 +281,92 @@ Pre-smoke builds against the repository's pinned SHMEM submodule, overriding
 `TLA_DIST_DSL_SHMEM_ROOT` for this build, without configuring or building SHMEM.
 Missing SHMEM configuration files disable RDMA in the DSL build. If the DSL
 build fails, pre-smoke stops before running the dependent tests.
+
+## Synchronization and notification
+
+The synchronization API targets C310 (Ascend 950). Import control options from
+`catccos.tla_dist.params`: `CoreScope.AIV/MIX`, `SignalOp.SET/ADD`, and
+`CompareOp.EQ/NE/GT/GE/LT/LE`. These are ordinary Python enums. Bare strings,
+integers, bools and members of another enum are rejected. Kernel configuration
+parameters use `tla.Constexpr[CoreScope]` or the corresponding enum type.
+Existing `CopyParams` string compatibility is retained.
+
+| API | Contract |
+| --- | --- |
+| `local_sync(*, scope=CoreScope.AIV)` | Local hard barrier, without network completion. AIV scope goes in SIMD `tla.vector()`; MIX scope goes in the common layer of a real cube/vector kernel. |
+| `sync(*, team=TEAM_WORLD, scope=CoreScope.AIV)` | Team arrival, without outstanding NBI completion. |
+| `barrier(*, team=TEAM_WORLD, scope=CoreScope.AIV)` | Complete every participating AIV's local pipeline/cache, drain the single owner's default network domain, then arrive. Explicit nonzero QPs must first be quieted by their submitting owners. |
+| `quiet()` | Default domain completion by flat AIV0. It does not scan arbitrary user QPs. |
+| `quiet(params, *, peer, ub_tensor=None, event_id=None)` | Existing peer/QP completion; RDMA needs scratch/event, UDMA accepts neither. |
+| `fence()` | Default domain delivery order, by flat AIV0. |
+| `signal(flag, value, *, peer, op=SignalOp.SET)` | Update the peer's corresponding symmetric Int32 slot; no payload completion guarantee. ADD requires a directly mapped MTE peer and no Int32 overflow. RoCE SET requires a matching enabled backend and flat AIV0 ownership. |
+| `wait_until(counter, value, *, cmp=CompareOp.EQ)` | Blocking local typed-slot condition wait. It refreshes the counter cacheline and does not acquire arbitrary payload data. |
+
+`TEAM_WORLD` is 0. A team handle of -1 makes the entire sync/barrier operation a
+no-op, including its local synchronization. Other handles must be valid,
+uniform across participants and initialized externally. Collectives require
+uniform control flow; dynamic if/while and dynamic loop bounds are rejected.
+SIMT use is unsupported. Keep fixed-trip loops and team selections consistent
+across ranks. `barrier_all()` retains its existing arrival semantics.
+
+Signal/wait operands are original local symmetric GM views with shape `(1,)`
+or `(1,1)` and linear RowMajor/ColumnMajor layout. Nonzero storage offsets and
+dynamic slot coordinates are supported. Do not pass a peer-translated
+`shmem_ptr` view into signal, which translates the address itself. Signal uses
+Int32. Wait supports Int/UInt 8/16/32/64 and Float32; runtime thresholds must
+match the slot dtype exactly. Integer constants must fit their width, and bool
+is rejected. Float32 thresholds round once, may include explicit infinities,
+and must not be NaN or overflow from a finite input. Dynamic counter/value NaN
+is a caller precondition. A wait has no built-in timeout.
+
+For payload publication, finish each producer's MTE transfer or explicit QP
+quiet before signal. After wait, establish the consumer's explicit MTE2
+pipeline dependency and read through MTE. Ordinary cached GM scalar reads need
+their own visibility mechanism. Reused slots need an epoch/acknowledgement
+protocol. Isolate independent writer flags on separate 64-byte cachelines and
+do not mix concurrent ordinary stores, SET and ADD to one slot.
+
+A standalone vector collective uses a single AIV entry with zero-cube/one-vector
+ratio metadata (`MIX_AIV_1_0`); it does not need an empty cube region. Paired MIX
+scope is cloned to both real AIC/AIV functions and uses the paired
+`meta_op.mix_aic.c310.bc,meta_op.mix_aiv.c310.bc` templates. The AIC side waits
+before and after the AIV public SHMEM collective. The compiler verifies pairing
+and ordering, and includes templates and resource ABI version 1 in cache keys.
+Custom bitcode must supply the helpers for the actual kernel type. All local
+hard-barrier participants must fit in simultaneously scheduled cores; launch
+logical block counts and the kernel ratio must respect the device's available
+AIC/AIV resources. Device validation is required before claiming a kernel
+configuration as supported.
+
+Default helpers reserve event 0 in S↔MTE3, MTE2↔S and MTE2↔MTE3. Explicit
+conflicts are diagnosed and automatic flags skip these IDs. User UB is capped
+at 188 KiB for sync/barrier/default quiet/fence/signal; local_sync and wait alone
+do not reduce the budget. Scratch uses the pinned SHMEM collective region from
+188 KiB, UDMA at 189 KiB, RDMA at 190 KiB, SDMA at 191 KiB, and a 16 KiB MTE
+region at 192 KiB. `ShmemRuntime.initialize` configures that MTE region before
+any launch and checks the public host API's result. External SHMEM initialization
+must establish the same contract. Bare UB pointers and inline code must also
+respect these reservations.
+
+The default network domain has one owner, flat AIV0 (`block_idx=0` and
+`sub_block_idx=0` in Python MIX code). Serialize kernels sharing its queue or a
+team collective. Do not overlap external RMA/AMO, explicit QP0 or Host
+submissions with its quiet/collective. Per-core UB scratch does not make a
+shared CQ safe for multiple pollers. Directly mapped MTE signal writers may
+operate on multiple AIVs. Network topology and dynamic ownership remain caller
+preconditions; unsupported ADD mappings and nonowner default waits trap.
+
+Run the parameterized suites after building with the pinned dependencies:
+
+```bash
+python -m pytest tests/frontend/ops/comm/test_sync.py tests/test_sync.py
+python tests/end_to_end/test_sync.py --list
+torchrun --standalone --nproc-per-node=2 tests/end_to_end/test_sync.py --case 'typed/*'
+```
+
+The standalone suite has independent same-width AscendC writers for typed
+waits, ready/delayed delivery in both rank directions, byte guards, storage
+offsets, local-only rank-0 launches, multiple AIV writers and an epoch/ack
+publication chain. Use an external timeout and serialize device jobs. Native
+linkage/frontend checks establish compilation contracts; actual NPU results,
+team-subset and network-specific tests remain separate acceptance evidence.
