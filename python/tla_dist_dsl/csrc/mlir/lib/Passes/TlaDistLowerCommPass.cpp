@@ -475,7 +475,8 @@ public:
         WalkResult result = getOperation().walk([&](Operation* operation) {
             StringRef name = operation->getName().getStringRef();
             auto transport = operation->getAttrOfType<StringAttr>("transport");
-            bool needsExplicitSync = (name.starts_with("tla_dist.") && name != "tla_dist.remote_copy" && name != "tla_dist.shmem_ptr" && name != "tla_dist.barrier_all") ||
+            bool needsExplicitSync = (name.starts_with("tla_dist.") && name != "tla_dist.remote_copy" &&
+                                      name != "tla_dist.shmem_ptr" && name != "tla_dist.barrier_all") ||
                                      (name == "tla_dist.remote_copy" && transport && transport.getValue() != "mte");
             if (needsExplicitSync && usesAutoSync(operation)) {
                 operation->emitOpError("RDMA/UDMA requires explicit synchronization");
@@ -499,27 +500,27 @@ public:
     void runOnOperation() override
     {
         bool defaults = false;
-        getOperation().walk([&](Operation* op) {
-            defaults |= isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
-        });
+        getOperation().walk(
+            [&](Operation* op) { defaults |= isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op); });
         auto defaultDirection = [](::Pipe src, ::Pipe dst) {
-            return (src == ::Pipe::scalar && dst == ::Pipe::mte3) ||
-                   (src == ::Pipe::mte3 && dst == ::Pipe::scalar) ||
-                   (src == ::Pipe::mte2 && dst == ::Pipe::scalar) ||
-                   (src == ::Pipe::scalar && dst == ::Pipe::mte2) ||
-                   (src == ::Pipe::mte2 && dst == ::Pipe::mte3) ||
-                   (src == ::Pipe::mte3 && dst == ::Pipe::mte2);
+            return (src == ::Pipe::scalar && dst == ::Pipe::mte3) || (src == ::Pipe::mte3 && dst == ::Pipe::scalar) ||
+                   (src == ::Pipe::mte2 && dst == ::Pipe::scalar) || (src == ::Pipe::scalar && dst == ::Pipe::mte2) ||
+                   (src == ::Pipe::mte2 && dst == ::Pipe::mte3) || (src == ::Pipe::mte3 && dst == ::Pipe::mte2);
         };
         bool conflict = false;
-        if (defaults) getOperation().walk([&](::tla::FlagOp flag) {
-            auto src = flag->getAttrOfType<::tla::PipeAttr>("src_pipe");
-            auto dst = flag->getAttrOfType<::tla::PipeAttr>("dst_pipe");
-            if (flag.getId() == 0 && src && dst && defaultDirection(src.getPipe(), dst.getPipe())) {
-                flag.emitOpError("event 0 in this pipe direction is reserved by SHMEM synchronization");
-                conflict = true;
-            }
-        });
-        if (conflict) { signalPassFailure(); return; }
+        if (defaults)
+            getOperation().walk([&](::tla::FlagOp flag) {
+                auto src = flag->getAttrOfType<::tla::PipeAttr>("src_pipe");
+                auto dst = flag->getAttrOfType<::tla::PipeAttr>("dst_pipe");
+                if (flag.getId() == 0 && src && dst && defaultDirection(src.getPipe(), dst.getPipe())) {
+                    flag.emitOpError("event 0 in this pipe direction is reserved by SHMEM synchronization");
+                    conflict = true;
+                }
+            });
+        if (conflict) {
+            signalPassFailure();
+            return;
+        }
         llvm::StringSet<> names;
         getOperation().walk([&](::tla::FlagOp flag) { names.insert(flag.getName()); });
         // Match CATLASS's module-wide allocation scope, deduplicating by pipe pair and id.
@@ -529,9 +530,10 @@ public:
             auto copy = dyn_cast<RemoteCopyOp>(op);
             auto quiet = dyn_cast<QuietOp>(op);
             bool defaultOp = isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
-            if (!copy && !quiet && !defaultOp) return;
+            if (!copy && !quiet && !defaultOp)
+                return;
             IntegerAttr eventId = defaultOp ? IntegerAttr::get(IntegerType::get(&getContext(), 32), 0) :
-                (copy ? copy.getEventIdAttr() : quiet.getEventIdAttr());
+                                              (copy ? copy.getEventIdAttr() : quiet.getEventIdAttr());
             if (!eventId)
                 return;
             StringRef transport = defaultOp ? "default" : (copy ? copy.getTransport() : quiet.getTransport());
@@ -548,11 +550,15 @@ public:
                     ::tla::PipeAttr::get(&getContext(), dst), eventId.getInt());
             };
             if (defaultOp) {
-                reserve(::Pipe::scalar, ::Pipe::mte3); reserve(::Pipe::mte3, ::Pipe::scalar);
-                reserve(::Pipe::mte2, ::Pipe::scalar); reserve(::Pipe::scalar, ::Pipe::mte2);
-                reserve(::Pipe::mte2, ::Pipe::mte3); reserve(::Pipe::mte3, ::Pipe::mte2);
+                reserve(::Pipe::scalar, ::Pipe::mte3);
+                reserve(::Pipe::mte3, ::Pipe::scalar);
+                reserve(::Pipe::mte2, ::Pipe::scalar);
+                reserve(::Pipe::scalar, ::Pipe::mte2);
+                reserve(::Pipe::mte2, ::Pipe::mte3);
+                reserve(::Pipe::mte3, ::Pipe::mte2);
             } else if (defaults && eventId.getInt() == 0) {
-                op->emitOpError("event 0 for explicit communication conflicts with the SHMEM default synchronization domain");
+                op->emitOpError(
+                    "event 0 for explicit communication conflicts with the SHMEM default synchronization domain");
                 conflict = true;
             } else if (copy && transport == "mte") {
                 reserve(::Pipe::mte2, ::Pipe::mte3);
@@ -572,14 +578,14 @@ public:
             // CATLASS reserves explicit ids before allocating automatic flags,
             // then erases this unused declaration without emitting set/wait.
         });
-        if (conflict) signalPassFailure();
+        if (conflict)
+            signalPassFailure();
     }
 };
 
 // The slot ABI is an address plus an exactly typed threshold; it is independent
 // of the copy ABI and does not inherit its Float32 restriction.
-FailureOr<Value> materializeSlotAddress(Operation* op, Value tensor, OpBuilder& builder,
-                                      DenseMap<Value, Value>& cache)
+FailureOr<Value> materializeSlotAddress(Operation* op, Value tensor, OpBuilder& builder, DenseMap<Value, Value>& cache)
 {
     auto source = tensor.getDefiningOp<::tla::TensorDescOp>();
     if (!source)
@@ -606,15 +612,13 @@ FailureOr<Value> materializeSlotAddress(Operation* op, Value tensor, OpBuilder& 
 }
 
 bool isScopedSync(Operation* op) { return isa<LocalSyncOp, SyncOp, BarrierOp>(op); }
-bool usesDefaultResources(Operation* op)
-{
-    return isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op);
-}
+bool usesDefaultResources(Operation* op) { return isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op); }
 
 class LowerSyncPattern final : public RewritePattern {
 public:
     LowerSyncPattern(MLIRContext* ctx, DenseMap<Value, Value>& cache)
-        : RewritePattern(MatchAnyOpTypeTag(), 2, ctx), cache(cache) {}
+        : RewritePattern(MatchAnyOpTypeTag(), 2, ctx), cache(cache)
+    {}
     LogicalResult matchAndRewrite(Operation* op, PatternRewriter& rewriter) const override
     {
         if (!isa<LocalSyncOp, SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp, WaitUntilOp>(op))
@@ -627,50 +631,89 @@ public:
         std::string name;
         if (isScopedSync(op)) {
             auto scope = cast<CoreScopeAttr>(op->getAttr("scope")).getValue();
-            if (scope == CoreScope::MIX) suffix = aic ? "mix_aic" : "mix_aiv";
-            if (isa<LocalSyncOp>(op)) name = "tla_dist_local_sync_" + suffix;
+            if (scope == CoreScope::MIX)
+                suffix = aic ? "mix_aic" : "mix_aiv";
+            if (isa<LocalSyncOp>(op))
+                name = "tla_dist_local_sync_" + suffix;
             else {
                 name = std::string(isa<SyncOp>(op) ? "tla_dist_sync_" : "tla_dist_barrier_") + suffix;
                 args.push_back(op->getOperand(0));
             }
         } else if (auto signal = dyn_cast<SignalOp>(op)) {
             auto address = materializeSlotAddress(op, signal.getFlag(), rewriter, cache);
-            if (failed(address)) return failure();
+            if (failed(address))
+                return failure();
             int32_t code;
-            switch (signal.getOp()) { case SignalKind::SET: code = 0; break; case SignalKind::ADD: code = 1; break; }
-            args = {*address, signal.getValue(), rewriter.create<arith::ConstantIntOp>(op->getLoc(), code, 32), signal.getPeer()};
+            switch (signal.getOp()) {
+                case SignalKind::SET:
+                    code = 0;
+                    break;
+                case SignalKind::ADD:
+                    code = 1;
+                    break;
+            }
+            args = {
+                *address, signal.getValue(), rewriter.create<arith::ConstantIntOp>(op->getLoc(), code, 32),
+                signal.getPeer()};
             name = "tla_dist_signal_i32";
         } else if (auto wait = dyn_cast<WaitUntilOp>(op)) {
             auto address = materializeSlotAddress(op, wait.getCounter(), rewriter, cache);
-            if (failed(address)) return failure();
+            if (failed(address))
+                return failure();
             auto type = wait.getValue().getType();
             Value threshold = wait.getValue();
-            if (type.isF32()) name = "tla_dist_wait_f32";
+            if (type.isF32())
+                name = "tla_dist_wait_f32";
             else {
                 auto integer = cast<IntegerType>(type);
-                name = std::string("tla_dist_wait_") + (integer.isUnsigned() ? "u" : "i") + std::to_string(integer.getWidth());
+                name = std::string("tla_dist_wait_") + (integer.isUnsigned() ? "u" : "i") +
+                       std::to_string(integer.getWidth());
                 if (!integer.isSignless()) {
-                    threshold = rewriter.create<UnrealizedConversionCastOp>(op->getLoc(), rewriter.getIntegerType(integer.getWidth()), threshold).getResult(0);
+                    threshold = rewriter
+                                    .create<UnrealizedConversionCastOp>(
+                                        op->getLoc(), rewriter.getIntegerType(integer.getWidth()), threshold)
+                                    .getResult(0);
                 }
                 if (integer.getWidth() < 64) {
-                    if (integer.isUnsigned()) threshold = rewriter.create<arith::ExtUIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
-                    else threshold = rewriter.create<arith::ExtSIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
+                    if (integer.isUnsigned())
+                        threshold = rewriter.create<arith::ExtUIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
+                    else
+                        threshold = rewriter.create<arith::ExtSIOp>(op->getLoc(), rewriter.getI64Type(), threshold);
                 }
             }
             int32_t code;
             switch (wait.getCmp()) {
-                case CompareKind::EQ: code = 0; break; case CompareKind::NE: code = 1; break;
-                case CompareKind::GT: code = 2; break; case CompareKind::GE: code = 3; break;
-                case CompareKind::LT: code = 4; break; case CompareKind::LE: code = 5; break;
+                case CompareKind::EQ:
+                    code = 0;
+                    break;
+                case CompareKind::NE:
+                    code = 1;
+                    break;
+                case CompareKind::GT:
+                    code = 2;
+                    break;
+                case CompareKind::GE:
+                    code = 3;
+                    break;
+                case CompareKind::LT:
+                    code = 4;
+                    break;
+                case CompareKind::LE:
+                    code = 5;
+                    break;
             }
             args = {*address, threshold, rewriter.create<arith::ConstantIntOp>(op->getLoc(), code, 32)};
-        } else name = isa<FenceOp>(op) ? "tla_dist_fence" : "tla_dist_quiet_default";
+        } else
+            name = isa<FenceOp>(op) ? "tla_dist_fence" : "tla_dist_quiet_default";
         SmallVector<Type> types;
-        for (Value arg : args) types.push_back(arg.getType());
+        for (Value arg : args)
+            types.push_back(arg.getType());
         auto callee = ::tla::getOrCreateRuntimeCall(op->getParentOfType<ModuleOp>(), name, types, {});
         annotateAivRuntimeCall(callee);
-        if (aic) callee->setAttr(hivm::TFuncCoreTypeAttr::name,
-            hivm::TFuncCoreTypeAttr::get(rewriter.getContext(), hivm::TFuncCoreType::AIC));
+        if (aic)
+            callee->setAttr(
+                hivm::TFuncCoreTypeAttr::name,
+                hivm::TFuncCoreTypeAttr::get(rewriter.getContext(), hivm::TFuncCoreType::AIC));
         // Kept through func-to-LLVM; never mark waits willreturn/readnone.
         callee->setAttr("passthrough", rewriter.getArrayAttr({rewriter.getStringAttr("convergent")}));
         auto call = rewriter.create<func::CallOp>(op->getLoc(), callee, args);
@@ -678,6 +721,7 @@ public:
         rewriter.eraseOp(op);
         return success();
     }
+
 private:
     DenseMap<Value, Value>& cache;
 };

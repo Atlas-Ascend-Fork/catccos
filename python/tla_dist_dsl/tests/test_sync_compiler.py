@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Native verification and device-link checks for synchronization kernels."""
 
 import subprocess
@@ -101,8 +110,7 @@ def test_sync_kernel_links(tmp_path, dtype, mode):
 
 @pytest.mark.parametrize(
     "mode,op",
-    [(m, o) for m in ("aiv", "mix") for o in ("local", "sync", "barrier")]
-    + [("aiv", "invalid")],
+    [(m, o) for m in ("aiv", "mix") for o in ("local", "sync", "barrier")] + [("aiv", "invalid")],
 )
 def test_collective_kernel_links(tmp_path, mode, op):
     require_native()
@@ -133,9 +141,7 @@ def test_default_helper_kernel_links(tmp_path, op):
     require_native()
     if _execution._find_hivmc_a5() is None:
         pytest.skip("configure CANN for device linkage")
-    artifact = tla_dist.compile(
-        default_kernel, type_args=(slot(), op), cache_dir=tmp_path
-    )
+    artifact = tla_dist.compile(default_kernel, type_args=(slot(), op), cache_dir=tmp_path)
     assert artifact.kernel_binary_path.is_file()
 
 
@@ -275,31 +281,17 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
     from end_to_end import test_sync as acceptance
 
     def fake(dtype, shape, stride=None, layout=tla.arch.RowMajor):
-        return tla.make_fake_tensor(
-            dtype, shape, stride or (shape[-1], 1), layout_tag=layout
-        )
+        return tla.make_fake_tensor(dtype, shape, stride or (shape[-1], 1), layout_tag=layout)
 
     lhs = fake(tla.Float16, (16, 16))
     rhs = fake(tla.Float16, (16, 16))
     cube = fake(tla.Float32, (32, 16))
     observed = fake(tla.Int32, (1, 1056))
-    mixed = (
-        case.endswith("mix")
-        or case == "typed-mixed-width"
-        or case.startswith("collective-fused")
-    )
+    mixed = case.endswith("mix") or case == "typed-mixed-width" or case.startswith("collective-fused")
     if case.startswith("typed"):
-        dtype = (
-            tla.Int8
-            if case == "typed-int8"
-            else (tla.Float32 if case == "typed-f32" else tla.UInt64)
-        )
+        dtype = tla.Int8 if case == "typed-int8" else (tla.Float32 if case == "typed-f32" else tla.UInt64)
         column = case == "typed-column"
-        counter = (
-            fake(dtype, (32, 1), (1, 32), tla.arch.ColumnMajor)
-            if column
-            else fake(dtype, (1, 32))
-        )
+        counter = fake(dtype, (32, 1), (1, 32), tla.arch.ColumnMajor) if column else fake(dtype, (1, 32))
         args = (
             counter,
             observed,
@@ -351,9 +343,7 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
         kernel = acceptance.publication
     else:
         args = (fake(tla.Int32, (1, 16)), fake(tla.Int32, (1, 4)), tla.Int32(1))
-        kernel = (
-            acceptance.dynamic_ub_guard if case == "dynamic-ub" else acceptance.ub_guard
-        )
+        kernel = acceptance.dynamic_ub_guard if case == "dynamic-ub" else acceptance.ub_guard
     artifact = tla_dist.compile(
         kernel,
         type_args=args,
@@ -362,10 +352,7 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
     )
     assert artifact.kernel_binary_path.is_file()
     if mixed:
-        assert (
-            "hivm.hir.mmad" in artifact.artifacts.LLVM
-            or "mmad" in artifact.artifacts.LLVM
-        )
+        assert "hivm.hir.mmad" in artifact.artifacts.LLVM or "mmad" in artifact.artifacts.LLVM
 
 
 @pytest.mark.parametrize(

@@ -111,10 +111,10 @@ def test_uid_initialization_selects_transport(monkeypatch, transport, engine, qp
     uid = b"uid\x00with-null"
     runtime = distributed.ShmemRuntime(uid, 1, 3, 8192, transport=transport, qp_num=qp_num).initialize()
     if transport == "mte":
-        assert fake.events == [("init", 1, 3, 8192, uid), ("mte_config", 192*1024, 16*1024, 0)]
+        assert fake.events == [("init", 1, 3, 8192, uid), ("mte_config", 192 * 1024, 16 * 1024, 0)]
     else:
         setup, qp_config, init, config = fake.events
-        assert config == ("mte_config", 192*1024, 16*1024, 0)
+        assert config == ("mte_config", 192 * 1024, 16 * 1024, 0)
         assert qp_config == ("set_qp_num", engine, qp_num)
         assert setup[:4] == ("set_attr", 1, 3, 8192)
         assert setup[4].data == uid

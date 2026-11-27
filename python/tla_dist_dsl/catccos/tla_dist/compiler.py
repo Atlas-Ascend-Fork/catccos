@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Patchless CATCCOS compiler entry layered over ``catlass.execution``."""
 
 from __future__ import annotations
@@ -62,8 +71,7 @@ def _resolve_base_bitcode(runtime: Any) -> str:
         missing = [path for path in paths if not path.is_file()]
         if missing:
             raise TlaRuntimeUnavailableError(
-                "TLA_DIST_DSL_BASE_BITCODE contains missing files: "
-                + ", ".join(str(path) for path in missing)
+                "TLA_DIST_DSL_BASE_BITCODE contains missing files: " + ", ".join(str(path) for path in missing)
             )
         return ",".join(str(path) for path in paths)
 
@@ -133,12 +141,8 @@ def _catccos_execution_hooks() -> Iterator[None]:
     original_cache_key = _execution._cache_key
     original_infer = _execution._resolve_compile_option_from_lowered_mlir
 
-    def infer_options(
-        runtime: Any, mlir_text: str, *, has_logical_mixed_handoff: bool
-    ) -> Any:
-        result = original_infer(
-            runtime, mlir_text, has_logical_mixed_handoff=has_logical_mixed_handoff
-        )
+    def infer_options(runtime: Any, mlir_text: str, *, has_logical_mixed_handoff: bool) -> Any:
+        result = original_infer(runtime, mlir_text, has_logical_mixed_handoff=has_logical_mixed_handoff)
         if "tla_dist.vector_hard_sync" in mlir_text:
             result = replace(result, kernel_mode="mix_aiv", arch_scope="aiv.c310")
         return result
@@ -156,9 +160,7 @@ def _catccos_execution_hooks() -> Iterator[None]:
         _execution._mark_ub_reserve_released(lowered_module, compile_option)
         # Keep the Python-owned MLIR module out of the TLA_DIST compiler process;
         # textual TLAIR is the complete subprocess boundary.
-        module_ir = lowered_module.operation.get_asm(
-            print_generic_op_form=True, enable_debug_info=True
-        )
+        module_ir = lowered_module.operation.get_asm(print_generic_op_form=True, enable_debug_info=True)
         return lower_tlair_to_mlir_cli(
             tlair_mlir=module_ir,
             kernel_abi=build_kernel_abi(lowered_module),
@@ -181,16 +183,11 @@ def _catccos_execution_hooks() -> Iterator[None]:
         runtime = kwargs["compile_option"]
         # Cache lookup precedes mixed-function splitting. An initial AIC target
         # can become MIX, so include its mixed AIV template in the fingerprint.
-        template_runtime = (
-            replace(runtime, kernel_mode="mix")
-            if runtime.kernel_mode == "aic"
-            else runtime
-        )
+        template_runtime = replace(runtime, kernel_mode="mix") if runtime.kernel_mode == "aic" else runtime
         if runtime.kernel_mode == "aiv" and '"tla.cube"' in kwargs["tlair_mlir"]:
             template_runtime = replace(runtime, kernel_mode="mix")
         elif runtime.kernel_mode == "aiv" and any(
-            f'"tla_dist.{name}"' in kwargs["tlair_mlir"]
-            for name in ("local_sync", "sync", "barrier")
+            f'"tla_dist.{name}"' in kwargs["tlair_mlir"] for name in ("local_sync", "sync", "barrier")
         ):
             template_runtime = replace(runtime, kernel_mode="mix_aiv")
         template = _resolve_base_bitcode(template_runtime)
@@ -220,14 +217,10 @@ class _SyncExecutor(JitExecutor):
 
         blocks = 1 if block_num is None else block_num
         if type(blocks) is not int or blocks <= 0:
-            raise TlaUnsupportedAbiError(
-                "hard synchronization requires a positive integer block_num"
-            )
+            raise TlaUnsupportedAbiError("hard synchronization requires a positive integer block_num")
         limit = resident_block_limit(self.device, paired=self.jit_module.is_mixed)
         if blocks > limit:
-            raise TlaUnsupportedAbiError(
-                f"hard-sync block_num={blocks} exceeds simultaneously resident limit {limit}"
-            )
+            raise TlaUnsupportedAbiError(f"hard-sync block_num={blocks} exceeds simultaneously resident limit {limit}")
         # Dispatch by exact function handle so unrelated Catlass kernels retain
         # their ordinary launcher even when called concurrently by another user.
         with _COMPILE_LOCK:
@@ -273,18 +266,14 @@ class CompileCallable:
         if func is None:
             raise TlaUnsupportedAbiError("Function is not set or invalid.")
         if not isinstance(func, TlaJitFunction):
-            raise TlaUnsupportedAbiError(
-                "tla_dist.compile expects a @tla_dist.kernel function."
-            )
+            raise TlaUnsupportedAbiError("tla_dist.compile expects a @tla_dist.kernel function.")
 
         type_args = kwargs.pop("type_args", None)
         if type_args is None:
             samples, kwargs = _bind_kernel_call_args(func.fn, args, kwargs)
             type_args = samples if samples else None
         elif args or kwargs.keys() & inspect.signature(func.fn).parameters.keys():
-            raise TypeError(
-                "type_args cannot be combined with positional or keyword kernel arguments."
-            )
+            raise TypeError("type_args cannot be combined with positional or keyword kernel arguments.")
         runtime = _runtime_options_from_kwargs(kwargs)
         with _COMPILE_LOCK, _catccos_execution_hooks():
             artifact = _execution.compile_and_cache(
@@ -306,9 +295,7 @@ class CompileCallable:
                 )
             )
         ):
-            return SyncCompiledFunction(
-                jit_module=artifact.jit_module, artifacts=artifact.artifacts
-            )
+            return SyncCompiledFunction(jit_module=artifact.jit_module, artifacts=artifact.artifacts)
         return artifact
 
 

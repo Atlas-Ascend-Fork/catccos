@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Expected-hang sync cases. Supervisor must enforce an external process timeout.
 
 Exit 124 from a bounded timeout is the expected observation; these cases never
@@ -40,9 +49,7 @@ def main():
             artifact = tla_dist.compile(unsatisfied, view, cache_dir=runtime.cache_dir)
             launch_args = (view,)
         else:
-            artifact = tla_dist.compile(
-                missing_participant, type_args=(), cache_dir=runtime.cache_dir
-            )
+            artifact = tla_dist.compile(missing_participant, type_args=(), cache_dir=runtime.cache_dir)
             launch_args = ()
         runtime.torch.npu.synchronize()
         runtime.shmem.barrier_all()

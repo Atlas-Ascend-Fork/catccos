@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Host-only hard-sync launcher isolation and residency contracts."""
 
 import threading
@@ -20,9 +29,7 @@ def executor(monkeypatch, *, limit=4):
     obj.device = 0
     obj.jit_module = SimpleNamespace(is_mixed=False)
     obj.function_handle = 10
-    monkeypatch.setattr(
-        _sync_runtime, "resident_block_limit", lambda device, paired: limit
-    )
+    monkeypatch.setattr(_sync_runtime, "resident_block_limit", lambda device, paired: limit)
     return obj
 
 
@@ -94,9 +101,7 @@ def test_default_arch_mixed_cache_includes_actual_aic_template(monkeypatch, tmp_
     aiv = tmp_path / "meta_op.mix_aiv.c310.bc"
     aic.write_bytes(b"aic-v1")
     aiv.write_bytes(b"aiv-v1")
-    monkeypatch.setattr(
-        compiler._execution, "_cache_key", lambda **kw: kw["tlair_mlir"]
-    )
+    monkeypatch.setattr(compiler._execution, "_cache_key", lambda **kw: kw["tlair_mlir"])
     monkeypatch.setattr(
         compiler,
         "_resolve_base_bitcode",

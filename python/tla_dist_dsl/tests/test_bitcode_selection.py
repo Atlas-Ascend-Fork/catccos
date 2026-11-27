@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Check template selection without importing native Catlass extensions."""
 
 from __future__ import annotations
@@ -130,9 +139,7 @@ class BitcodeSelectionTests(unittest.TestCase):
         mixed = Path(self.write(bc / "meta_op.mix_aiv.c310.bc"))
         self.write(bc / "meta_op.mix_aic.c310.bc")
         execution = SimpleNamespace(
-            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
-                runtime
-            ),
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (runtime),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=None,
@@ -142,9 +149,7 @@ class BitcodeSelectionTests(unittest.TestCase):
         with self.scope["_catccos_execution_hooks"]():
 
             def key(mode):
-                return execution._cache_key(
-                    compile_option=Runtime(mode, f"{mode}.c310"), tlair_mlir="kernel"
-                )
+                return execution._cache_key(compile_option=Runtime(mode, f"{mode}.c310"), tlair_mlir="kernel")
 
             initial_aic = key("aic")
             initial_aiv = key("aiv")
@@ -158,9 +163,7 @@ class BitcodeSelectionTests(unittest.TestCase):
         mixed = self.write(bc / "meta_op.mix_aiv.c310.bc")
         original = object()
         execution = SimpleNamespace(
-            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
-                runtime
-            ),
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (runtime),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=original,
@@ -181,9 +184,7 @@ class BitcodeSelectionTests(unittest.TestCase):
         explicit = self.write(self.root / "custom-print-with-shmem.bc")
         os.environ["TLA_DIST_DSL_BASE_BITCODE"] = explicit
         execution = SimpleNamespace(
-            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
-                runtime
-            ),
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (runtime),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=None,
@@ -192,9 +193,7 @@ class BitcodeSelectionTests(unittest.TestCase):
         self.scope["_execution"] = execution
         with self.scope["_catccos_execution_hooks"]():
             self.assertEqual(
-                execution._resolve_hivm_template_bitcode(
-                    Runtime("mix", "aic.c310"), variant="print"
-                ),
+                execution._resolve_hivm_template_bitcode(Runtime("mix", "aic.c310"), variant="print"),
                 explicit,
             )
 

@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Standalone synchronization acceptance. Run --list before selecting device cases.
 
 All jobs require the supervisor's external timeout and serialized device lease.
@@ -165,9 +174,7 @@ def cube_work(lhs: tla.Tensor, rhs: tla.Tensor, result: tla.Tensor):
     l0b = tla.allocate(256, tla.Float16, tla.AddressSpace.l0b, 512)
     l0c = tla.allocate(256, tla.Float32, tla.AddressSpace.l0c, 512)
     with tla.cube():
-        out = tla.tile_view(
-            result, tla.make_shape(16, 16), tla.make_coord(tla.arch.block_idx(), 0)
-        )
+        out = tla.tile_view(result, tla.make_shape(16, 16), tla.make_coord(tla.arch.block_idx(), 0))
         a = tla.make_tensor_like(l1a, lhs, tla.arch.zN)
         b = tla.make_tensor_like(l1b, rhs, tla.arch.zN)
         tla.copy(a, lhs)
@@ -228,13 +235,9 @@ def typed_wait(
     if tla.const_expr(case.rank1):
         counter_slot = tla.tile_view(counter, tla.make_shape(1), tla.make_coord(index))
     elif tla.const_expr(case.column):
-        counter_slot = tla.tile_view(
-            counter, tla.make_shape(1, 1), tla.make_coord(index, 0)
-        )
+        counter_slot = tla.tile_view(counter, tla.make_shape(1, 1), tla.make_coord(index, 0))
     else:
-        counter_slot = tla.tile_view(
-            counter, tla.make_shape(1, 1), tla.make_coord(0, index)
-        )
+        counter_slot = tla.tile_view(counter, tla.make_shape(1, 1), tla.make_coord(0, index))
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
             if rank == producer:
@@ -332,9 +335,7 @@ def collective(
 
 
 @tla.kernel
-def signal_case(
-    flag: tla.Tensor, peer: tla.Int32, value: tla.Int32, add: tla.Constexpr[bool]
-):
+def signal_case(flag: tla.Tensor, peer: tla.Int32, value: tla.Int32, add: tla.Constexpr[bool]):
     slot = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, 0))
     with tla.vector():
         if tla.const_expr(add):
@@ -372,17 +373,13 @@ def publication(
     )
     complete = tla.flag("publication_complete", tla.arch.MTE3, tla.arch.MTE2, id=2)
     loaded = tla.flag("publication_loaded", tla.arch.MTE2, tla.arch.MTE3, id=2)
-    layout = tla.make_layout(
-        tla.make_shape(5, 13), tla.make_stride(32, 1), layoutTag=tla.arch.RowMajor
-    )
+    layout = tla.make_layout(tla.make_shape(5, 13), tla.make_stride(32, 1), layoutTag=tla.arch.RowMajor)
     if tla.const_expr(mixed):
         cube_work(lhs, rhs, cube_result)
     for epoch in tla.range(1, rounds + 1):
         slot = (epoch - 1) % 2
         ready = tla.tile_view(flag, tla.make_shape(1, 1), tla.make_coord(0, slot * 16))
-        acknowledged = tla.tile_view(
-            ack, tla.make_shape(1, 1), tla.make_coord(0, slot * 16)
-        )
+        acknowledged = tla.tile_view(ack, tla.make_shape(1, 1), tla.make_coord(0, slot * 16))
         destination = tla.make_tensor(payload.ptr + (slot * 7 + 1) * 32, layout)
         src = tla.make_tensor(source.ptr + ((epoch - 1) * 7 + 1) * 32, layout)
         out = tla.make_tensor(output.ptr + ((epoch - 1) * 7 + 1) * 32, layout)
@@ -393,9 +390,7 @@ def publication(
                     tla_dist.remote_copy(
                         destination,
                         src,
-                        tla_dist.params.CopyParams(
-                            mode="put", transport="udma", wqe_pipe="s"
-                        ),
+                        tla_dist.params.CopyParams(mode="put", transport="udma", wqe_pipe="s"),
                         peer=peer,
                     )
                     tla_dist.quiet()
@@ -544,9 +539,7 @@ def manifest():
 
 
 def _view(tensor, *, column=False):
-    return tla_dist.from_dlpack(
-        tensor, layout_tag=tla.arch.ColumnMajor if column else tla.arch.RowMajor
-    )
+    return tla_dist.from_dlpack(tensor, layout_tag=tla.arch.ColumnMajor if column else tla.arch.RowMajor)
 
 
 def _cube_inputs(runtime, blocks):
@@ -559,9 +552,7 @@ def _cube_inputs(runtime, blocks):
 
 
 def _check_cube(runtime, result):
-    runtime.assert_equal(
-        result, runtime.torch.full(tuple(result.shape), 16, dtype=runtime.torch.float32)
-    )
+    runtime.assert_equal(result, runtime.torch.full(tuple(result.shape), 16, dtype=runtime.torch.float32))
 
 
 def _evidence(runtime, kind, record):
@@ -592,9 +583,7 @@ def _compile(runtime, kernel, args, *, mixed=False):
     try:
         if os.environ.get("VQR_SYNC_EVIDENCE_DIR"):
             runtime.cache_dir = (
-                Path(os.environ["VQR_SYNC_EVIDENCE_DIR"]).expanduser().resolve()
-                / f"rank{runtime.rank}"
-                / "cache"
+                Path(os.environ["VQR_SYNC_EVIDENCE_DIR"]).expanduser().resolve() / f"rank{runtime.rank}" / "cache"
             )
             runtime.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact = tla_dist.compile(
@@ -654,23 +643,15 @@ def _wait(runtime, case):
     lhs, rhs, cube_result = _cube_inputs(runtime, 1)
     variants = [case]
     if case.cmp in (CompareOp.GE, CompareOp.LE):
-        variants.append(
-            replace(
-                case, target=case.threshold + (1 if case.cmp is CompareOp.GE else -1)
-            )
-        )
+        variants.append(replace(case, target=case.threshold + (1 if case.cmp is CompareOp.GE else -1)))
     if case.dtype == "Float32" and case.target == float("inf"):
         variants.append(replace(case, target=-float("inf"), threshold=-float("inf")))
-    layouts = (
-        [(True, False), (False, True)] if case.offset else [(case.rank1, case.column)]
-    )
+    layouts = [(True, False), (False, True)] if case.offset else [(case.rank1, case.column)]
     launches = 0
     try:
         for variant in variants:
             threshold = (
-                struct.unpack("<f", struct.pack("<f", variant.threshold))[0]
-                if name == "Float32"
-                else variant.threshold
+                struct.unpack("<f", struct.pack("<f", variant.threshold))[0] if name == "Float32" else variant.threshold
             )
             predicate = {
                 CompareOp.EQ: operator.eq,
@@ -696,9 +677,7 @@ def _wait(runtime, case):
                             assert predicate(initial, threshold) is (not delayed)
                             assert predicate(selected.target, threshold)
                             expected = bytearray([0xA5] * 256)
-                            expected[byte_offset : byte_offset + size] = struct.pack(
-                                "<" + fmt, initial
-                            )
+                            expected[byte_offset : byte_offset + size] = struct.pack("<" + fmt, initial)
                             expected8 = bytearray([0xA5] * 64)
                             expectedf = bytearray([0xA5] * 64)
                             expected8[0:1] = struct.pack("<b", 0 if delayed else -7)
@@ -708,18 +687,12 @@ def _wait(runtime, case):
                                 (raw8, expected8),
                                 (rawf, expectedf),
                             ):
-                                target.copy_(
-                                    torch.tensor(list(data), dtype=torch.uint8).reshape(
-                                        tuple(target.shape)
-                                    )
-                                )
+                                target.copy_(torch.tensor(list(data), dtype=torch.uint8).reshape(tuple(target.shape)))
                             output.zero_()
                             snapshot.fill_(0x5A)
                             started.zero_()
                             cube_result.fill_(-1)
-                            bits = int.from_bytes(
-                                struct.pack("<" + fmt, selected.target), "little"
-                            )
+                            bits = int.from_bytes(struct.pack("<" + fmt, selected.target), "little")
                             args = (
                                 _view(counter, column=column),
                                 _view(output),
@@ -748,9 +721,7 @@ def _wait(runtime, case):
                             launches += 1
                             receiver = runtime.rank != producer
                             if receiver:
-                                expected[byte_offset : byte_offset + size] = (
-                                    struct.pack("<" + fmt, selected.target)
-                                )
+                                expected[byte_offset : byte_offset + size] = struct.pack("<" + fmt, selected.target)
                                 if selected.mixed:
                                     expected8[0:1] = struct.pack("<b", -7)
                                     expectedf[0:4] = struct.pack("<f", 1.25)
@@ -760,30 +731,24 @@ def _wait(runtime, case):
                                 (raw8, expected8),
                                 (rawf, expectedf),
                             ):
-                                if bytes(target.cpu().reshape(-1).tolist()) != bytes(
-                                    data
-                                ):
+                                if bytes(target.cpu().reshape(-1).tolist()) != bytes(data):
                                     error = f"typed writer/address/guard mismatch {name}/{selected.cmp.name}"
                             seen = output.cpu()[0].tolist()
                             if seen[0] != (1 if receiver else 0):
                                 error = f"wait return marker mismatch {seen}"
                             wanted = bytearray([0x5A] * 40)
                             if receiver:
-                                wanted[0:8] = struct.pack(
-                                    "<" + fmt, selected.target
-                                ).ljust(8, b"\0")
+                                wanted[0:8] = struct.pack("<" + fmt, selected.target).ljust(8, b"\0")
                                 if selected.mixed:
-                                    wanted[16:24] = struct.pack("<b", -7).ljust(
-                                        8, b"\0"
-                                    )
-                                    wanted[32:40] = struct.pack("<f", 1.25).ljust(
-                                        8, b"\0"
-                                    )
+                                    wanted[16:24] = struct.pack("<b", -7).ljust(8, b"\0")
+                                    wanted[32:40] = struct.pack("<f", 1.25).ljust(8, b"\0")
                             observed = bytes(snapshot.cpu().reshape(-1).tolist())
                             if receiver:
                                 captured = struct.unpack("<" + fmt, observed[:size])[0]
                                 if not predicate(captured, threshold):
-                                    error = f"wait returned before condition: {captured} {selected.cmp.name} {threshold}"
+                                    error = (
+                                        f"wait returned before condition: {captured} {selected.cmp.name} {threshold}"
+                                    )
                             if observed != bytes(wanted):
                                 error = f"wait returned wrong immediate typed values: {observed.hex()} expected {wanted.hex()}"
                             runtime.check_errors(error)
@@ -810,9 +775,7 @@ def _run(runtime, item, *, local_only=False):
             from catccos.tla_dist._sync_runtime import resident_block_limit
 
             blocks = resident_block_limit(int(os.environ["LOCAL_RANK"]), paired=False)
-        observed = torch.zeros(
-            (1, 1056), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}"
-        )
+        observed = torch.zeros((1, 1056), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}")
         lhs, rhs, cube_result = _cube_inputs(runtime, blocks)
         done = torch.zeros((1, 16), dtype=torch.int32, device=observed.device)
         fused = case.startswith(("mix", "fused"))
@@ -831,16 +794,13 @@ def _run(runtime, item, *, local_only=False):
             _check_cube(runtime, cube_result)
         if case.startswith("fused"):
             runtime.check_errors(
-                None
-                if done.cpu()[0, 0].item() == 1
-                else "AIV did not release the independent Cube waiter"
+                None if done.cpu()[0, 0].item() == 1 else "AIV did not release the independent Cube waiter"
             )
         actual = observed.cpu()[0].tolist()
         expected = blocks * (2 if fused else 1)
         runtime.check_errors(
             None
-            if (local_only and runtime.rank != 0)
-            or (actual[0] == 3 and sum(actual[32::16]) == expected)
+            if (local_only and runtime.rank != 0) or (actual[0] == 3 and sum(actual[32::16]) == expected)
             else f"participant markers {actual}"
         )
     elif item[0] == "signal":
@@ -852,24 +812,16 @@ def _run(runtime, item, *, local_only=False):
             artifact = _compile(runtime, signal_case, args)
             _launch(runtime, artifact, args[:-1], blocks)
             runtime.check_errors(
-                None
-                if flag.cpu()[0, 0].item() == 3 * (blocks if add else 1)
-                else "signal result mismatch"
+                None if flag.cpu()[0, 0].item() == 3 * (blocks if add else 1) else "signal result mismatch"
             )
         finally:
             runtime.shmem.free(flag)
     elif item[0] == "default":
-        output = torch.zeros(
-            (1, 4), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}"
-        )
+        output = torch.zeros((1, 4), dtype=torch.int32, device=f"npu:{os.environ['LOCAL_RANK']}")
         args = (_view(output),)
         artifact = _compile(runtime, default_ordering, args)
         _launch(runtime, artifact, args, 1)
-        runtime.check_errors(
-            None
-            if output.cpu()[0, 0].item() == 9
-            else "default completion marker missing"
-        )
+        runtime.check_errors(None if output.cpu()[0, 0].item() == 9 else "default completion marker missing")
     elif item[0] == "ub-guard":
         flag = runtime.shmem.symmetric_tensor((1, 16), torch.int32)
         try:
@@ -878,15 +830,11 @@ def _run(runtime, item, *, local_only=False):
             for dynamic in (False, True):
                 flag.zero_()
                 output.zero_()
-                artifact = _compile(
-                    runtime, dynamic_ub_guard if dynamic else ub_guard, args
-                )
+                artifact = _compile(runtime, dynamic_ub_guard if dynamic else ub_guard, args)
                 budget = artifact.max_ub_bytes if dynamic else None
                 if dynamic:
                     runtime.check_errors(
-                        None
-                        if budget == 188 * 1024
-                        else f"dynamic UB budget {budget} differs from reserved contract"
+                        None if budget == 188 * 1024 else f"dynamic UB budget {budget} differs from reserved contract"
                     )
                 _launch(runtime, artifact, args, 1, ub=budget)
                 seen = output.cpu()[0].tolist()
@@ -903,11 +851,7 @@ def _run(runtime, item, *, local_only=False):
                         artifact(*args, block_num=1, ub=budget + 32)
                     except TlaExecutionError as error:
                         refused = "limit" in str(error) or "exceed" in str(error)
-                    runtime.check_errors(
-                        None
-                        if refused
-                        else "same artifact accepted out-of-range dynamic UB"
-                    )
+                    runtime.check_errors(None if refused else "same artifact accepted out-of-range dynamic UB")
         finally:
             runtime.shmem.free(flag)
         return 2
@@ -932,21 +876,13 @@ def _publication(runtime, *, transport):
             flag[:, 32] = 0
             ack[:, 16] = 0
             ack[:, 32] = 0
-            expected_source = torch.full(
-                (rounds * 7 + 2, 32), sentinel, dtype=torch.float32
-            )
+            expected_source = torch.full((rounds * 7 + 2, 32), sentinel, dtype=torch.float32)
             expected_output = torch.full_like(expected_source, sentinel)
             expected_payload = torch.full((14, 32), sentinel, dtype=torch.float32)
             for epoch in range(1, rounds + 1):
-                values = (
-                    torch.arange(65, dtype=torch.float32).reshape(5, 13)
-                    + runtime.rank * 1048576
-                    + epoch * 256
-                )
+                values = torch.arange(65, dtype=torch.float32).reshape(5, 13) + runtime.rank * 1048576 + epoch * 256
                 remote_values = (
-                    torch.arange(65, dtype=torch.float32).reshape(5, 13)
-                    + (1 - runtime.rank) * 1048576
-                    + epoch * 256
+                    torch.arange(65, dtype=torch.float32).reshape(5, 13) + (1 - runtime.rank) * 1048576 + epoch * 256
                 )
                 row = (epoch - 1) * 7 + 1
                 expected_source[row : row + 5, 8:21] = values
@@ -998,9 +934,7 @@ def main():
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--case", default="*", help="glob over manifest names")
     args = parser.parse_args()
-    cases = [
-        (name, item) for name, item in manifest() if fnmatch.fnmatch(name, args.case)
-    ]
+    cases = [(name, item) for name, item in manifest() if fnmatch.fnmatch(name, args.case)]
     if args.list:
         for name, _ in cases:
             print(name)

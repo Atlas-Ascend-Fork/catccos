@@ -1,3 +1,12 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# This file is a part of the CANN Open Software.
+# Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+# Please refer to the License for details. You may not use this file except in compliance with the License.
+# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+# See LICENSE in the root of the software repository for the full text of the License.
+
+
 """Parameterised synchronization frontend contracts; no device pass is implied."""
 
 import inspect
@@ -125,9 +134,7 @@ def test_compare_requires_exact_enum(bad):
         wait_ir(cmp=bad)
 
 
-@pytest.mark.parametrize(
-    "bad", ["aiv", 0, False, Wrong.AIV, SignalOp.SET, CompareOp.EQ]
-)
+@pytest.mark.parametrize("bad", ["aiv", 0, False, Wrong.AIV, SignalOp.SET, CompareOp.EQ])
 def test_scope_requires_exact_enum(bad):
     @tla.kernel
     def kernel():
@@ -138,9 +145,7 @@ def test_scope_requires_exact_enum(bad):
         kernel.dump_mlir(type_args=())
 
 
-@pytest.mark.parametrize(
-    "bad", ["set", 0, False, Wrong.SET, CoreScope.AIV, CompareOp.EQ]
-)
+@pytest.mark.parametrize("bad", ["set", 0, False, Wrong.SET, CoreScope.AIV, CompareOp.EQ])
 def test_signal_requires_exact_enum(bad):
     @tla.kernel
     def kernel(flag: tla.Tensor):
@@ -163,14 +168,10 @@ def test_constexpr_enum(scope):
         if tla.const_expr(scope is CoreScope.MIX):
             tla_dist.local_sync(scope=scope)
 
-    assert f"scope = {tuple(CoreScope).index(scope)} : i32" in kernel.dump_mlir(
-        type_args=(scope,)
-    )
+    assert f"scope = {tuple(CoreScope).index(scope)} : i32" in kernel.dump_mlir(type_args=(scope,))
 
 
-@pytest.mark.parametrize(
-    "name", ["local_sync", "sync", "barrier", "fence", "signal", "wait_until"]
-)
+@pytest.mark.parametrize("name", ["local_sync", "sync", "barrier", "fence", "signal", "wait_until"])
 def test_exports(name):
     assert name in tla_dist.__all__
     assert callable(getattr(tla_dist, name))

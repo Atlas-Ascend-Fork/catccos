@@ -259,26 +259,40 @@ REGISTER_SHMEM_REMOTE_COPY(put, Put, Mte, float)
 
 // Synchronization ABI v1. New calls use public SHMEM entry points only.
 namespace {
-CATLASS_DEVICE void tlaDistCompleteLocal() {
+CATLASS_DEVICE void tlaDistCompleteLocal()
+{
     AscendC::PipeBarrier<PIPE_ALL>();
     AscendC::GlobalTensor<uint8_t> global;
     __asm__ __volatile__("" ::: "memory");
-    AscendC::DataCacheCleanAndInvalid<uint8_t, AscendC::CacheLine::ENTIRE_DATA_CACHE,
-        AscendC::DcciDst::CACHELINE_OUT>(global);
+    AscendC::DataCacheCleanAndInvalid<uint8_t, AscendC::CacheLine::ENTIRE_DATA_CACHE, AscendC::DcciDst::CACHELINE_OUT>(
+        global);
     __asm__ __volatile__("" ::: "memory");
 }
 CATLASS_DEVICE bool tlaDistDefaultOwner() { return AscendC::GetBlockIdx() == 0; }
-CATLASS_DEVICE int tlaDistCompare(int code) {
+CATLASS_DEVICE int tlaDistCompare(int code)
+{
     switch (code) {
-        case 0: return ACLSHMEM_CMP_EQ; case 1: return ACLSHMEM_CMP_NE;
-        case 2: return ACLSHMEM_CMP_GT; case 3: return ACLSHMEM_CMP_GE;
-        case 4: return ACLSHMEM_CMP_LT; case 5: return ACLSHMEM_CMP_LE;
-        default: trap(); return ACLSHMEM_CMP_EQ;
+        case 0:
+            return ACLSHMEM_CMP_EQ;
+        case 1:
+            return ACLSHMEM_CMP_NE;
+        case 2:
+            return ACLSHMEM_CMP_GT;
+        case 3:
+            return ACLSHMEM_CMP_GE;
+        case 4:
+            return ACLSHMEM_CMP_LT;
+        case 5:
+            return ACLSHMEM_CMP_LE;
+        default:
+            trap();
+            return ACLSHMEM_CMP_EQ;
     }
 }
-}
+} // namespace
 extern "C" {
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_aiv() {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_aiv()
+{
 #ifdef __CCE_AICORE_ENABLE_MIX__
     AscendC::SyncAll<true>();
 #else
@@ -286,57 +300,100 @@ extern "C" {
     trap();
 #endif
 }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_aiv(int32_t team) { if (team != -1) aclshmem_sync(team); }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_aiv(int32_t team) {
-    if (team == -1) return;
-    tlaDistCompleteLocal(); aclshmem_barrier(team);
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_aiv(int32_t team)
+{
+    if (team != -1)
+        aclshmem_sync(team);
+}
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_aiv(int32_t team)
+{
+    if (team == -1)
+        return;
+    tlaDistCompleteLocal();
+    aclshmem_barrier(team);
 }
 #ifdef __CCE_AICORE_ENABLE_MIX__
 [aicore] __attribute__((always_inline, convergent)) void tla_dist_local_sync_mix_aiv() { AscendC::SyncAll<false>(); }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_mix_aiv(int32_t team) {
-    if (team == -1) return;
-    AscendC::SyncAll<false>(); aclshmem_sync(team); AscendC::SyncAll<false>();
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_sync_mix_aiv(int32_t team)
+{
+    if (team == -1)
+        return;
+    AscendC::SyncAll<false>();
+    aclshmem_sync(team);
+    AscendC::SyncAll<false>();
 }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_mix_aiv(int32_t team) {
-    if (team == -1) return;
-    tlaDistCompleteLocal(); AscendC::SyncAll<false>(); aclshmem_barrier(team); AscendC::SyncAll<false>();
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_barrier_mix_aiv(int32_t team)
+{
+    if (team == -1)
+        return;
+    tlaDistCompleteLocal();
+    AscendC::SyncAll<false>();
+    aclshmem_barrier(team);
+    AscendC::SyncAll<false>();
 }
 #endif
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_quiet_default() {
-    if (!tlaDistDefaultOwner()) { trap(); return; }
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_quiet_default()
+{
+    if (!tlaDistDefaultOwner()) {
+        trap();
+        return;
+    }
     aclshmem_quiet();
 }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_fence() {
-    if (!tlaDistDefaultOwner()) { trap(); return; }
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_fence()
+{
+    if (!tlaDistDefaultOwner()) {
+        trap();
+        return;
+    }
     aclshmem_fence();
 }
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_signal_i32(uint64_t addr, int32_t value, int32_t op, int32_t peer) {
+[aicore] __attribute__((always_inline, convergent)) void tla_dist_signal_i32(
+    uint64_t addr, int32_t value, int32_t op, int32_t peer)
+{
     // The fixed SHMEM ABI publishes topology and base mappings in device
     // state. Only inspect it here; all actual operations still use the public
     // aclshmemx_signal_op. Never infer reachability from translated slot != 0.
     auto* state = aclshmemi_get_state();
     constexpr uint32_t expectedVersion = (1U << 16) + sizeof(aclshmem_device_host_state_t);
-    if (state->version != expectedVersion) { trap(); return; }
-    if (peer < 0 || peer >= aclshmem_n_pes()) { trap(); return; }
+    if (state->version != expectedVersion) {
+        trap();
+        return;
+    }
+    if (peer < 0 || peer >= aclshmem_n_pes()) {
+        trap();
+        return;
+    }
     bool mte = (state->topo_list[peer] & ACLSHMEM_TRANSPORT_MTE) != 0;
     bool base = state->p2p_device_heap_base[peer] != nullptr;
     bool roce = (state->topo_list[peer] & ACLSHMEM_TRANSPORT_ROCE) != 0;
-    if (!tla_dist_sync::signalRouteAllowed(mte, base, roce, TLA_DIST_ENABLE_RDMA,
-                                          tlaDistDefaultOwner(), op == 1)) { trap(); return; }
+    if (!tla_dist_sync::signalRouteAllowed(mte, base, roce, TLA_DIST_ENABLE_RDMA, tlaDistDefaultOwner(), op == 1)) {
+        trap();
+        return;
+    }
     int backendOp;
     switch (op) {
-        case 0: backendOp = ACLSHMEM_SIGNAL_SET; break;
-        case 1: backendOp = ACLSHMEM_SIGNAL_ADD; break;
-        default: trap(); return;
+        case 0:
+            backendOp = ACLSHMEM_SIGNAL_SET;
+            break;
+        case 1:
+            backendOp = ACLSHMEM_SIGNAL_ADD;
+            break;
+        default:
+            trap();
+            return;
     }
     aclshmemx_signal_op(reinterpret_cast<__gm__ int32_t*>(addr), value, backendOp, peer);
 }
 // Small-integer thresholds use a 64-bit C ABI, avoiding target-specific
 // signext/zeroext attributes. UInt64 never passes through a signed value.
-#define TLA_DIST_WAIT(NAME, BACKEND, TYPE, ABI) \
-[aicore] __attribute__((always_inline, convergent)) void tla_dist_wait_##NAME(uint64_t addr, ABI value, int32_t cmp) { \
-    aclshmem_##BACKEND##_wait_until(reinterpret_cast<__gm__ TYPE*>(addr), tlaDistCompare(cmp), static_cast<TYPE>(value)); \
-}
+#define TLA_DIST_WAIT(NAME, BACKEND, TYPE, ABI)                                                                     \
+    [aicore]                                                                                                        \
+        __attribute__((always_inline, convergent)) void tla_dist_wait_##NAME(uint64_t addr, ABI value, int32_t cmp) \
+    {                                                                                                               \
+        aclshmem_##BACKEND##_wait_until(                                                                            \
+            reinterpret_cast<__gm__ TYPE*>(addr), tlaDistCompare(cmp), static_cast<TYPE>(value));                   \
+    }
 TLA_DIST_WAIT(i8, int8, int8_t, int64_t)
 TLA_DIST_WAIT(i16, int16, int16_t, int64_t)
 TLA_DIST_WAIT(i32, int32, int32_t, int64_t)

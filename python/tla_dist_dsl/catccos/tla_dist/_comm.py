@@ -43,9 +43,7 @@ def _resolve_integer(value: Any) -> tuple[Any, bool]:
     signed = True
     if isinstance(resolved, Numeric):
         if not type(resolved).is_integer:
-            raise TlaLoweringError(
-                f"expected an integer communication operand, got {type(resolved).__name__}"
-            )
+            raise TlaLoweringError(f"expected an integer communication operand, got {type(resolved).__name__}")
         signed = bool(type(resolved).signed)
         if isinstance(resolved.value, (bool, int)):
             return int(resolved.value), signed
@@ -53,9 +51,7 @@ def _resolve_integer(value: Any) -> tuple[Any, bool]:
     return resolved, signed
 
 
-def _as_integer_value(
-    value: Any, width: int, *, loc: mlir_ir.Location | None
-) -> mlir_ir.Value:
+def _as_integer_value(value: Any, width: int, *, loc: mlir_ir.Location | None) -> mlir_ir.Value:
     resolved, signed = _resolve_integer(value)
     result_type = mlir_ir.IntegerType.get_signless(width)
     if isinstance(resolved, mlir_ir.Value):
@@ -79,14 +75,8 @@ def _as_integer_value(
                 ).results[0]
                 if resolved.type == result_type:
                     return resolved
-            cast_name = (
-                ("arith.extsi" if signed else "arith.extui")
-                if source_type.width < width
-                else "arith.trunci"
-            )
-            return mlir_ir.Operation.create(
-                cast_name, operands=[resolved], results=[result_type], loc=loc
-            ).results[0]
+            cast_name = ("arith.extsi" if signed else "arith.extui") if source_type.width < width else "arith.trunci"
+            return mlir_ir.Operation.create(cast_name, operands=[resolved], results=[result_type], loc=loc).results[0]
     if isinstance(resolved, (bool, int)):
         return mlir_ir.Operation.create(
             "arith.constant",
@@ -94,15 +84,11 @@ def _as_integer_value(
             attributes={"value": mlir_ir.IntegerAttr.get(result_type, int(resolved))},
             loc=loc,
         ).results[0]
-    raise TlaLoweringError(
-        f"expected an i{width}-like communication operand, got {type(value).__name__}"
-    )
+    raise TlaLoweringError(f"expected an i{width}-like communication operand, got {type(value).__name__}")
 
 
 @dsl_user_op
-def shmem_ptr(
-    ptr: Pointer, peer: IndexLike, *, loc: mlir_ir.Location | None = None
-) -> Pointer:
+def shmem_ptr(ptr: Pointer, peer: IndexLike, *, loc: mlir_ir.Location | None = None) -> Pointer:
     """Translate a symmetric GM pointer into a GM pointer on a world PE.
 
     Call in the scalar body of ``tla.vector()``. The caller supplies a valid PE
@@ -122,9 +108,7 @@ def shmem_ptr(
     pe = _as_integer_value(peer, 32, loc=loc)
     # Use byte alignment because the peer mapping can have a different base.
     result_type = PtrType.get(source.pointee, "gm", 1)
-    op = mlir_ir.Operation.create(
-        name, operands=[source.value, pe], results=[result_type], loc=loc
-    )
+    op = mlir_ir.Operation.create(name, operands=[source.value, pe], results=[result_type], loc=loc)
     return _core._Pointer(op.results[0])
 
 
@@ -143,13 +127,9 @@ def _build_scratch_operands(
     element_type: Any | None = None,
 ) -> list[mlir_ir.Value]:
     if required and (ub_tensor is None or event_id is None):
-        raise TlaLoweringError(
-            f"{operation_name} requires both a UB scratch tensor and event_id"
-        )
+        raise TlaLoweringError(f"{operation_name} requires both a UB scratch tensor and event_id")
     if not required and (ub_tensor is not None or event_id is not None):
-        raise TlaLoweringError(
-            f"{operation_name}: this route does not accept ub_tensor or event_id"
-        )
+        raise TlaLoweringError(f"{operation_name}: this route does not accept ub_tensor or event_id")
 
     operands = []
     if ub_tensor is not None:
@@ -159,9 +139,7 @@ def _build_scratch_operands(
         if ub_desc is None:
             raise TlaLoweringError(f"{operation_name} requires a UB tensor descriptor")
         if ub_desc.addrspace.lower() != "ub":
-            raise TlaLoweringError(
-                f"{operation_name} requires its scratch tensor in UB"
-            )
+            raise TlaLoweringError(f"{operation_name} requires its scratch tensor in UB")
         if element_type is not None and str(ub_desc.element_type) != str(element_type):
             raise TlaLoweringError(f"{operation_name} requires identical src/UB dtypes")
         operands.append(ub_value)
@@ -174,9 +152,7 @@ def _event_id_attr(operation_name: str, event_id: int) -> mlir_ir.IntegerAttr:
     if isinstance(value, Numeric) and type(value).is_integer:
         value = value.value
     if not isinstance(value, int) or isinstance(value, bool):
-        raise TlaLoweringError(
-            f"{operation_name}: event_id must be a compile-time integer"
-        )
+        raise TlaLoweringError(f"{operation_name}: event_id must be a compile-time integer")
     if not 0 <= value < 8:
         raise TlaLoweringError(f"{operation_name}: event_id must be in range 0..7")
     return mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), value)
@@ -209,31 +185,19 @@ def _build_remote_copy(
     route = (src_desc.addrspace.lower(), dst_desc.addrspace.lower())
     transport = CopyTransport(params.transport)
     mode = None if params.mode is None else CopyMode(params.mode)
-    wqe_pipe = (
-        CopyWqePipe(params.wqe_pipe or CopyWqePipe.MTE3)
-        if transport == CopyTransport.UDMA
-        else None
-    )
+    wqe_pipe = CopyWqePipe(params.wqe_pipe or CopyWqePipe.MTE3) if transport == CopyTransport.UDMA else None
     if route not in (("gm", "gm"), ("gm", "ub"), ("ub", "gm")):
-        raise TlaLoweringError(
-            f"{operation_name} requires GM -> GM, GM -> UB, or UB -> GM"
-        )
+        raise TlaLoweringError(f"{operation_name} requires GM -> GM, GM -> UB, or UB -> GM")
     if route == ("gm", "gm"):
         if mode is None:
-            raise TlaLoweringError(
-                f"{operation_name}: GM -> GM requires an explicit mode ('get' or 'put')"
-            )
+            raise TlaLoweringError(f"{operation_name}: GM -> GM requires an explicit mode ('get' or 'put')")
     else:
         if transport != CopyTransport.MTE:
-            raise TlaLoweringError(
-                f"{operation_name}: GM <-> UB is only supported for MTE"
-            )
+            raise TlaLoweringError(f"{operation_name}: GM <-> UB is only supported for MTE")
         required_mode = CopyMode.GET if route == ("gm", "ub") else CopyMode.PUT
         if mode is not None and mode != required_mode:
             route_name = "GM -> UB" if route == ("gm", "ub") else "UB -> GM"
-            raise TlaLoweringError(
-                f"{operation_name}: {route_name} requires mode='{required_mode.value}'"
-            )
+            raise TlaLoweringError(f"{operation_name}: {route_name} requires mode='{required_mode.value}'")
         mode = required_mode
     if str(src_desc.element_type) != str(dst_desc.element_type):
         raise TlaLoweringError(f"{operation_name} requires identical src/dst dtypes")
@@ -247,22 +211,14 @@ def _build_remote_copy(
         # Dynamic metadata is checked against the materialized SSA descriptor
         # by communication lowering; a RowMajor tag alone is insufficient.
         if column_stride is not None and column_stride != 1:
-            raise TlaLoweringError(
-                f"{operation_name} requires {name} column stride of 1"
-            )
+            raise TlaLoweringError(f"{operation_name} requires {name} column stride of 1")
     if str(src_desc.element_type) != "f32":
         raise TlaLoweringError(f"{operation_name} currently supports only f32 tensors")
     if params.atomic_mode == AtomicMode.ADD and route[1] != "gm":
-        raise TlaLoweringError(
-            f"{operation_name}: atomic ADD requires a GM destination"
-        )
+        raise TlaLoweringError(f"{operation_name}: atomic ADD requires a GM destination")
 
-    needs_scratch = route == ("gm", "gm") and not (
-        transport == CopyTransport.UDMA and wqe_pipe == CopyWqePipe.S
-    )
-    qp_idx = (
-        params.qp_idx if transport in (CopyTransport.RDMA, CopyTransport.UDMA) else 0
-    )
+    needs_scratch = route == ("gm", "gm") and not (transport == CopyTransport.UDMA and wqe_pipe == CopyWqePipe.S)
+    qp_idx = params.qp_idx if transport in (CopyTransport.RDMA, CopyTransport.UDMA) else 0
     operands = [
         dst_value,
         src_value,
@@ -367,9 +323,7 @@ def quiet(
     _runtime._require_enclosing_region(name, "vector")
     if params is None:
         if peer is not None or ub_tensor is not None or event_id is not None:
-            raise TlaLoweringError(
-                f"{name}(): default quiet does not accept peer, ub_tensor or event_id"
-            )
+            raise TlaLoweringError(f"{name}(): default quiet does not accept peer, ub_tensor or event_id")
         _require_simd(name)
         mlir_ir.Operation.create("tla_dist.quiet_default", loc=loc)
         return
@@ -385,11 +339,7 @@ def quiet(
         _as_integer_value(peer, 32, loc=loc),
         _as_integer_value(params.qp_idx, 32, loc=loc),
     ]
-    operands.extend(
-        _build_scratch_operands(
-            name, transport == CopyTransport.RDMA, ub_tensor, event_id
-        )
-    )
+    operands.extend(_build_scratch_operands(name, transport == CopyTransport.RDMA, ub_tensor, event_id))
     attributes = {"transport": mlir_ir.StringAttr.get(transport.value)}
     if event_id is not None:
         attributes["event_id"] = _event_id_attr(name, event_id)
@@ -419,9 +369,7 @@ _WAIT_DTYPES = ("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32")
 def _enum_attr(name: str, value: Any, enum: type, mapping: dict) -> mlir_ir.IntegerAttr:
     value = _core._resolve_bound_value(value)
     if type(value) is not enum:
-        raise TlaLoweringError(
-            f"{name} requires {enum.__name__} member, got {type(value).__name__}"
-        )
+        raise TlaLoweringError(f"{name} requires {enum.__name__} member, got {type(value).__name__}")
     return mlir_ir.IntegerAttr.get(mlir_ir.IntegerType.get_signless(32), mapping[value])
 
 
@@ -431,24 +379,14 @@ def _require_simd(name: str) -> None:
         raise TlaLoweringError(f"{name} requires the SIMD scalar body of tla.vector()")
 
 
-def _index32(
-    name: str, value: Any, *, minimum: int, loc: Any, maximum: int = 2**31 - 1
-) -> mlir_ir.Value:
+def _index32(name: str, value: Any, *, minimum: int, loc: Any, maximum: int = 2**31 - 1) -> mlir_ir.Value:
     original = _core._resolve_bound_value(value)
     if isinstance(original, bool):
         raise TlaLoweringError(f"{name} requires an integer, got bool")
-    if isinstance(original, Numeric) and (
-        not type(original).is_integer or type(original).width == 1
-    ):
-        raise TlaLoweringError(
-            f"{name} requires Index or an integer no wider than 32 bits"
-        )
+    if isinstance(original, Numeric) and (not type(original).is_integer or type(original).width == 1):
+        raise TlaLoweringError(f"{name} requires Index or an integer no wider than 32 bits")
     resolved, _ = _resolve_integer(original)
-    if (
-        isinstance(original, Numeric)
-        and type(original).width > 32
-        and not isinstance(resolved, int)
-    ):
+    if isinstance(original, Numeric) and type(original).width > 32 and not isinstance(resolved, int):
         raise TlaLoweringError(f"{name} runtime integer must be no wider than 32 bits")
     if isinstance(resolved, int):
         if not minimum <= resolved <= maximum:
@@ -467,26 +405,14 @@ def _collective(name: str, scope: CoreScope, team: Any | None, loc: Any) -> None
     attr = _enum_attr("scope", scope, CoreScope, _SCOPE)
     if attr.value == 0:
         _require_simd(name)
-    elif _runtime._has_enclosing_region("vector") or _runtime._has_enclosing_region(
-        "cube"
-    ):
-        raise TlaLoweringError(
-            f"{name}: MIX scope requires the common layer outside cube/vector regions"
-        )
-    operands = (
-        []
-        if team is None
-        else [_index32("team", team, minimum=-1, maximum=SHMEM_MAX_TEAMS - 1, loc=loc)]
-    )
-    mlir_ir.Operation.create(
-        name, operands=operands, attributes={"scope": attr}, loc=loc
-    )
+    elif _runtime._has_enclosing_region("vector") or _runtime._has_enclosing_region("cube"):
+        raise TlaLoweringError(f"{name}: MIX scope requires the common layer outside cube/vector regions")
+    operands = [] if team is None else [_index32("team", team, minimum=-1, maximum=SHMEM_MAX_TEAMS - 1, loc=loc)]
+    mlir_ir.Operation.create(name, operands=operands, attributes={"scope": attr}, loc=loc)
 
 
 @dsl_user_op
-def local_sync(
-    *, scope: CoreScope = CoreScope.AIV, loc: mlir_ir.Location | None = None
-) -> None:
+def local_sync(*, scope: CoreScope = CoreScope.AIV, loc: mlir_ir.Location | None = None) -> None:
     """Arrive at a hard local AIV or paired MIX barrier; no network completion."""
     _collective("tla_dist.local_sync", scope, None, loc)
 
@@ -529,9 +455,7 @@ def _slot(name: str, tensor: Tensor) -> tuple[Any, Any, str]:
         raise TlaLoweringError(f"{name} requires a symmetric GM tensor descriptor")
     shape = _core._flatten_tla_tuple(desc.shape)
     if len(shape) not in (1, 2) or any(dim != 1 for dim in shape):
-        raise TlaLoweringError(
-            f"{name} requires a provably single-slot shape (1,) or (1,1)"
-        )
+        raise TlaLoweringError(f"{name} requires a provably single-slot shape (1,) or (1,1)")
     if desc.layout_tag.replace("_", "").lower() not in ("rowmajor", "columnmajor"):
         raise TlaLoweringError(f"{name} requires a linear layout")
     return result, desc, str(desc.element_type)
@@ -542,9 +466,7 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
     scalar_type = Numeric.from_dtype_token(dtype)
     if isinstance(value, Numeric):
         if type(value) is not scalar_type:
-            raise TlaLoweringError(
-                f"{name}: runtime threshold must match counter dtype {dtype}"
-            )
+            raise TlaLoweringError(f"{name}: runtime threshold must match counter dtype {dtype}")
         constant = value.value
         if not isinstance(constant, (int, float, bool)):
             return value.ir_value()
@@ -556,9 +478,7 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
             original_finite = math.isfinite(value)
             value = struct.unpack("f", struct.pack("f", value))[0]
         except (OverflowError, struct.error) as error:
-            raise TlaLoweringError(
-                f"{name}: finite threshold outside Float32 range"
-            ) from error
+            raise TlaLoweringError(f"{name}: finite threshold outside Float32 range") from error
         if original_finite and not math.isfinite(value):
             raise TlaLoweringError(f"{name}: finite threshold outside Float32 range")
         if math.isnan(value):
@@ -567,15 +487,9 @@ def _threshold(name: str, value: Any, dtype: str, loc: Any) -> mlir_ir.Value:
         if type(value) is not int:
             raise TlaLoweringError(f"{name}: integer threshold requires int (not bool)")
         bits = int(dtype[1:])
-        low, high = (
-            (0, 2**bits - 1)
-            if dtype.startswith("u")
-            else (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
-        )
+        low, high = (0, 2**bits - 1) if dtype.startswith("u") else (-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
         if not low <= value <= high:
-            raise TlaLoweringError(
-                f"{name}: threshold outside {dtype} range [{low}, {high}]"
-            )
+            raise TlaLoweringError(f"{name}: threshold outside {dtype} range [{low}, {high}]")
     if dtype.startswith("u"):
         # arith.constant requires signless integers. Preserve the bits there,
         # then restore the descriptor's unsigned type through a bit-preserving

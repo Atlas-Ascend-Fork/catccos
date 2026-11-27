@@ -58,7 +58,6 @@ __all__ = [  # noqa: PLE0604 - the pinned upstream export list is intentional
     "fence",
     "signal",
     "wait_until",
-
     "__version__",
     "barrier_all",
     "compile",

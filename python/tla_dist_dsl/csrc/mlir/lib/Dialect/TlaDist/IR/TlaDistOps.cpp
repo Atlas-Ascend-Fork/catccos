@@ -50,7 +50,7 @@ mlir::LogicalResult verifySlot(mlir::Operation* op, mlir::Value slot, mlir::Valu
         return op->emitOpError("threshold dtype must match counter dtype");
     auto integer = mlir::dyn_cast<mlir::IntegerType>(dtype);
     bool valid = dtype.isF32() || (integer && (integer.getWidth() == 8 || integer.getWidth() == 16 ||
-        integer.getWidth() == 32 || integer.getWidth() == 64));
+                                               integer.getWidth() == 32 || integer.getWidth() == 64));
     if (!valid || (signal && (!dtype.isSignlessInteger(32))))
         return op->emitOpError(signal ? "signal requires Int32" : "unsupported wait counter dtype");
     mlir::APFloat constant(0.0f);
@@ -58,7 +58,7 @@ mlir::LogicalResult verifySlot(mlir::Operation* op, mlir::Value slot, mlir::Valu
         return op->emitOpError("NaN thresholds are unsupported");
     return mlir::success();
 }
-}
+} // namespace
 
 mlir::LogicalResult tla_dist::SignalOp::verify() { return verifySlot(*this, getFlag(), getValue(), true); }
 mlir::LogicalResult tla_dist::WaitUntilOp::verify() { return verifySlot(*this, getCounter(), getValue(), false); }

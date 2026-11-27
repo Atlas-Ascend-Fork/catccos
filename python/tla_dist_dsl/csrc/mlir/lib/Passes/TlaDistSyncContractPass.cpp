@@ -1,5 +1,11 @@
 // Copyright (c) 2026 Huawei Technologies Co., Ltd.
-// Licensed under CANN Open Software License Agreement Version 2.0.
+// This file is a part of the CANN Open Software.
+// Licensed under CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 #include "Dialect/TlaDist/IR/TlaDistOps.h"
 #include "Passes/TlaDistPasses.h"
 #include "bishengir/Dialect/HIVM/IR/HIVM.h"
@@ -17,27 +23,35 @@ namespace {
 constexpr int64_t userUbLimit = 188 * 1024;
 bool scoped(Operation* op) { return isa<LocalSyncOp, SyncOp, BarrierOp>(op); }
 bool resources(Operation* op) { return isa<SyncOp, BarrierOp, QuietDefaultOp, FenceOp, SignalOp>(op); }
-bool inRegion(Operation* op, StringRef name) {
+bool inRegion(Operation* op, StringRef name)
+{
     for (Operation* p = op->getParentOp(); p; p = p->getParentOp())
-        if (p->getName().getStringRef() == name) return true;
+        if (p->getName().getStringRef() == name)
+            return true;
     return false;
 }
 // Diagnose visibly non-owner paths; arbitrary dynamic ownership remains a
 // runtime contract. MTE signal writers are deliberately exempt.
-bool excludesDefaultOwner(Value condition, bool thenRegion) {
+bool excludesDefaultOwner(Value condition, bool thenRegion)
+{
     if (auto both = condition.getDefiningOp<arith::AndIOp>())
         return thenRegion && (excludesDefaultOwner(both.getLhs(), true) || excludesDefaultOwner(both.getRhs(), true));
     auto cmp = condition.getDefiningOp<arith::CmpIOp>();
-    if (!cmp) return false;
+    if (!cmp)
+        return false;
     auto isIndex = [](Value v) {
         auto* def = v.getDefiningOp();
-        return def && (def->getName().getStringRef() == "tla.arch.block_idx" || def->getName().getStringRef() == "tla.arch.sub_block_idx");
+        return def && (def->getName().getStringRef() == "tla.arch.block_idx" ||
+                       def->getName().getStringRef() == "tla.arch.sub_block_idx");
     };
     APInt value;
-    if (!isIndex(cmp.getLhs()) || !matchPattern(cmp.getRhs(), m_ConstantInt(&value))) return false;
+    if (!isIndex(cmp.getLhs()) || !matchPattern(cmp.getRhs(), m_ConstantInt(&value)))
+        return false;
     auto predicate = cmp.getPredicate();
-    if (predicate == arith::CmpIPredicate::eq) return thenRegion ? value != 0 : value == 0;
-    if (predicate == arith::CmpIPredicate::ne) return thenRegion ? value == 0 : value != 0;
+    if (predicate == arith::CmpIPredicate::eq)
+        return thenRegion ? value != 0 : value == 0;
+    if (predicate == arith::CmpIPredicate::ne)
+        return thenRegion ? value == 0 : value != 0;
     if (predicate == arith::CmpIPredicate::sgt || predicate == arith::CmpIPredicate::ugt)
         return thenRegion && value.isNonNegative();
     return false;
@@ -46,13 +60,19 @@ class ValidateSyncContractPass final : public PassWrapper<ValidateSyncContractPa
 public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateSyncContractPass)
     StringRef getArgument() const override { return "tla_dist-validate-sync-contract"; }
-    void runOnOperation() override {
+    void runOnOperation() override
+    {
         int64_t point = 0;
         auto result = getOperation().walk([&](Operation* op) {
             bool collective = scoped(op);
-            if (!collective && !isa<SignalOp, WaitUntilOp, QuietDefaultOp, FenceOp>(op)) return WalkResult::advance();
-            auto fail = [&](StringRef message) { op->emitOpError(message); return WalkResult::interrupt(); };
-            if (inRegion(op, "tla.vec.func")) return fail("synchronization requires SIMD, not SIMT");
+            if (!collective && !isa<SignalOp, WaitUntilOp, QuietDefaultOp, FenceOp>(op))
+                return WalkResult::advance();
+            auto fail = [&](StringRef message) {
+                op->emitOpError(message);
+                return WalkResult::interrupt();
+            };
+            if (inRegion(op, "tla.vec.func"))
+                return fail("synchronization requires SIMD, not SIMT");
             if (isa<QuietDefaultOp, FenceOp>(op)) {
                 Operation* child = op;
                 for (Operation* parent = op->getParentOp(); parent; child = parent, parent = parent->getParentOp()) {
@@ -65,8 +85,10 @@ public:
             }
             bool vector = inRegion(op, "tla.vector");
             bool mix = collective && cast<CoreScopeAttr>(op->getAttr("scope")).getValue() == CoreScope::MIX;
-            if (!mix && !vector) return fail("AIV synchronization requires a tla.vector region");
-            if (mix && (vector || inRegion(op, "tla.cube"))) return fail("MIX synchronization requires the common layer outside cube/vector regions");
+            if (!mix && !vector)
+                return fail("AIV synchronization requires a tla.vector region");
+            if (mix && (vector || inRegion(op, "tla.cube")))
+                return fail("MIX synchronization requires the common layer outside cube/vector regions");
             auto function = op->getParentOfType<func::FuncOp>();
             auto core = function->getAttrOfType<hivm::TFuncCoreTypeAttr>(hivm::TFuncCoreTypeAttr::name);
             if (mix) {
@@ -75,8 +97,10 @@ public:
                 op->setAttr("tla_dist.sync_point", IntegerAttr::get(IntegerType::get(&getContext(), 64), point++));
             }
             if (collective) {
-                for (Operation* parent = op->getParentOp(); parent != function.getOperation(); parent = parent->getParentOp()) {
-                    if (isa<scf::IfOp, scf::WhileOp>(parent)) return fail("collective cannot be nested in a dynamic if/while");
+                for (Operation* parent = op->getParentOp(); parent != function.getOperation();
+                     parent = parent->getParentOp()) {
+                    if (isa<scf::IfOp, scf::WhileOp>(parent))
+                        return fail("collective cannot be nested in a dynamic if/while");
                     if (auto loop = dyn_cast<scf::ForOp>(parent)) {
                         APInt v;
                         if (!matchPattern(loop.getLowerBound(), m_ConstantInt(&v)) ||
@@ -87,7 +111,8 @@ public:
                 }
                 if (!isa<LocalSyncOp>(op)) {
                     APInt team;
-                    if (matchPattern(op->getOperand(0), m_ConstantInt(&team)) && (team.getSExtValue() < -1 || team.getSExtValue() >= TLA_DIST_SHMEM_MAX_TEAMS))
+                    if (matchPattern(op->getOperand(0), m_ConstantInt(&team)) &&
+                        (team.getSExtValue() < -1 || team.getSExtValue() >= TLA_DIST_SHMEM_MAX_TEAMS))
                         return fail("team constant must be WORLD, INVALID=-1 or a valid nonnegative handle");
                 }
                 if (!mix && core && core.getFuncCoreType() == hivm::TFuncCoreType::AIV) {
@@ -98,43 +123,52 @@ public:
             }
             return WalkResult::advance();
         });
-        if (result.wasInterrupted()) signalPassFailure();
+        if (result.wasInterrupted())
+            signalPassFailure();
     }
 };
 class ReserveSyncResourcesPass final : public PassWrapper<ReserveSyncResourcesPass, OperationPass<ModuleOp>> {
 public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReserveSyncResourcesPass)
     StringRef getArgument() const override { return "tla_dist-reserve-sync-resources"; }
-    void runOnOperation() override {
+    void runOnOperation() override
+    {
         ModuleOp module = getOperation();
         bool needed = false;
         module.walk([&](Operation* op) { needed |= resources(op); });
-        if (!needed) return;
+        if (!needed)
+            return;
         // Catlass records UB accounting on the module. This is the exact
         // metadata consumed by compiler_bridge and the launch-sized UB guard.
         for (StringRef key : {"tla.ub_static_bytes", "tla.ub_dynamic_base"}) {
             auto size = module->getAttrOfType<IntegerAttr>(key);
             if (size && size.getInt() > userUbLimit) {
                 module.emitOpError("SHMEM synchronization reserves UB from byte 192512; user UB exceeds 188 KiB");
-                signalPassFailure(); return;
+                signalPassFailure();
+                return;
             }
         }
         auto budget = module->getAttrOfType<IntegerAttr>("tla.ub_programmable_bytes");
-        module->setAttr("tla.ub_programmable_bytes", IntegerAttr::get(IntegerType::get(&getContext(), 64),
-            budget ? std::min(budget.getInt(), userUbLimit) : userUbLimit));
+        module->setAttr(
+            "tla.ub_programmable_bytes",
+            IntegerAttr::get(
+                IntegerType::get(&getContext(), 64), budget ? std::min(budget.getInt(), userUbLimit) : userUbLimit));
         module->setAttr("tla_dist.sync_resource_abi", IntegerAttr::get(IntegerType::get(&getContext(), 32), 1));
     }
 };
 // The single-vector hard barrier uses a real MIX_AIV_1_0 ELF. Preserve the
 // AIV function (no artificial cube), with explicit zero-cube/one-vector ratio.
-class FinalizeVectorSyncMetadataPass final : public PassWrapper<FinalizeVectorSyncMetadataPass, OperationPass<ModuleOp>> {
+class FinalizeVectorSyncMetadataPass final
+    : public PassWrapper<FinalizeVectorSyncMetadataPass, OperationPass<ModuleOp>> {
 public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(FinalizeVectorSyncMetadataPass)
     StringRef getArgument() const override { return "tla_dist-finalize-vector-sync-metadata"; }
-    void runOnOperation() override {
+    void runOnOperation() override
+    {
         bool found = false;
         getOperation().walk([&](func::FuncOp function) {
-            if (!function->hasAttr("tla_dist.vector_hard_sync")) return;
+            if (!function->hasAttr("tla_dist.vector_hard_sync"))
+                return;
             function->setAttr(hivm::TCoreRatioAttr::name, hivm::TCoreRatioAttr::get(&getContext(), 0, 1));
             function->setAttr("mix_mode", StringAttr::get(&getContext(), "mix"));
             // Runtime MIX entry lookup uses the original logical name, while
@@ -142,24 +176,32 @@ public:
             function.setSymName((function.getSymName() + "_mix_aiv").str());
             found = true;
         });
-        if (found) getOperation()->setAttr(hivm::TModuleCoreTypeAttr::name,
-            hivm::TModuleCoreTypeAttr::get(&getContext(), hivm::TModuleCoreType::MIX));
+        if (found)
+            getOperation()->setAttr(
+                hivm::TModuleCoreTypeAttr::name,
+                hivm::TModuleCoreTypeAttr::get(&getContext(), hivm::TModuleCoreType::MIX));
     }
 };
 class ValidateSyncPairsPass final : public PassWrapper<ValidateSyncPairsPass, OperationPass<ModuleOp>> {
 public:
     MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ValidateSyncPairsPass)
     StringRef getArgument() const override { return "tla_dist-validate-sync-pairs"; }
-    void runOnOperation() override {
+    void runOnOperation() override
+    {
         llvm::DenseMap<int64_t, std::pair<Operation*, Operation*>> pairs;
         bool invalid = false;
         llvm::StringMap<std::pair<SmallVector<int64_t>, SmallVector<int64_t>>> sequences;
         getOperation().walk([&](Operation* op) {
             auto id = op->getAttrOfType<IntegerAttr>("tla_dist.sync_point");
-            if (!id) return;
-            auto core = op->getParentOfType<func::FuncOp>()->getAttrOfType<hivm::TFuncCoreTypeAttr>(hivm::TFuncCoreTypeAttr::name);
-            if (!core || (core.getFuncCoreType() != hivm::TFuncCoreType::AIC && core.getFuncCoreType() != hivm::TFuncCoreType::AIV)) {
-                op->emitOpError("MIX synchronization point was not split"); invalid = true; return;
+            if (!id)
+                return;
+            auto core = op->getParentOfType<func::FuncOp>()->getAttrOfType<hivm::TFuncCoreTypeAttr>(
+                hivm::TFuncCoreTypeAttr::name);
+            if (!core || (core.getFuncCoreType() != hivm::TFuncCoreType::AIC &&
+                          core.getFuncCoreType() != hivm::TFuncCoreType::AIV)) {
+                op->emitOpError("MIX synchronization point was not split");
+                invalid = true;
+                return;
             }
             auto function = op->getParentOfType<func::FuncOp>();
             auto symbol = function.getSymName();
@@ -169,26 +211,35 @@ public:
             auto& sequence = sequences[base];
             auto& sideSequence = cube ? sequence.first : sequence.second;
             sideSequence.push_back(id.getInt());
-            for (Operation* parent = op->getParentOp(); parent != function.getOperation(); parent = parent->getParentOp()) {
+            for (Operation* parent = op->getParentOp(); parent != function.getOperation();
+                 parent = parent->getParentOp()) {
                 if (auto loop = dyn_cast<scf::ForOp>(parent)) {
                     for (Value bound : {loop.getLowerBound(), loop.getUpperBound(), loop.getStep()}) {
                         APInt constant;
-                        if (!matchPattern(bound, m_ConstantInt(&constant))) { invalid = true; break; }
+                        if (!matchPattern(bound, m_ConstantInt(&constant))) {
+                            invalid = true;
+                            break;
+                        }
                         sideSequence.push_back(constant.getSExtValue());
                     }
                 }
             }
             auto& pair = pairs[id.getInt()];
             auto& side = core.getFuncCoreType() == hivm::TFuncCoreType::AIC ? pair.first : pair.second;
-            if (side) { op->emitOpError("duplicate MIX synchronization side"); invalid = true; }
+            if (side) {
+                op->emitOpError("duplicate MIX synchronization side");
+                invalid = true;
+            }
             side = op;
         });
         for (auto& entry : pairs) {
             auto [aic, aiv] = entry.second;
             if (!aic || !aiv) {
-                (aic ? aic : aiv)->emitOpError("MIX synchronization point missing AIC or AIV side"); invalid = true;
+                (aic ? aic : aiv)->emitOpError("MIX synchronization point missing AIC or AIV side");
+                invalid = true;
             } else if (aic->getName() != aiv->getName() || aic->getAttr("scope") != aiv->getAttr("scope")) {
-                aic->emitOpError("MIX synchronization sides do not match"); invalid = true;
+                aic->emitOpError("MIX synchronization sides do not match");
+                invalid = true;
             }
         }
         for (const auto& entry : sequences) {
@@ -197,16 +248,23 @@ public:
                 invalid = true;
             }
         }
-        if (invalid) signalPassFailure();
+        if (invalid)
+            signalPassFailure();
     }
 };
-}
+} // namespace
 std::unique_ptr<Pass> createValidateSyncContractPass() { return std::make_unique<ValidateSyncContractPass>(); }
 std::unique_ptr<Pass> createReserveSyncResourcesPass() { return std::make_unique<ReserveSyncResourcesPass>(); }
 std::unique_ptr<Pass> createValidateSyncPairsPass() { return std::make_unique<ValidateSyncPairsPass>(); }
-std::unique_ptr<Pass> createFinalizeVectorSyncMetadataPass() { return std::make_unique<FinalizeVectorSyncMetadataPass>(); }
-void registerSyncContractPasses() {
+std::unique_ptr<Pass> createFinalizeVectorSyncMetadataPass()
+{
+    return std::make_unique<FinalizeVectorSyncMetadataPass>();
+}
+void registerSyncContractPasses()
+{
     PassRegistration<FinalizeVectorSyncMetadataPass>();
-    PassRegistration<ValidateSyncContractPass>(); PassRegistration<ReserveSyncResourcesPass>(); PassRegistration<ValidateSyncPairsPass>();
+    PassRegistration<ValidateSyncContractPass>();
+    PassRegistration<ReserveSyncResourcesPass>();
+    PassRegistration<ValidateSyncPairsPass>();
 }
-}
+} // namespace tla_dist
