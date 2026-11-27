@@ -149,6 +149,11 @@ extern "C" {
 
 #if ((defined(__NPU_ARCH__) && __NPU_ARCH__ == 3510) || (defined(CATLASS_ARCH) && CATLASS_ARCH == 3510))
 
+[aicore] __attribute__((always_inline)) uint64_t shmem_ptr_addr(uint64_t address, int32_t peer)
+{
+    return reinterpret_cast<uint64_t>(aclshmem_ptr(reinterpret_cast<__gm__ void*>(address), peer));
+}
+
 #define REGISTER_SHMEM_REMOTE_COPY(Name, Direction, Transport, DType)                                                \
     [aicore]                                                                                                         \
         __attribute__((always_inline)) void _mlir_ciface_shmem_remote_##Name##_gm_row_major_to_gm_row_major_##DType( \

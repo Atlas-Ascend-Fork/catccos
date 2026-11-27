@@ -49,6 +49,27 @@ hardware from Ascend 950PR&950DT products are unavailable. Compilation and numer
 ranks together. Each rank uses its own temporary compilation cache, and SHMEM
 allocations are freed before the process group is destroyed.
 
+## SHMEM pointer translation
+
+`test_shmem_ptr.py` runs on two Ascend 950 devices with a direct peer
+mapping. Each rank creates a symmetric FP32 tensor, translates `src.ptr + 1`
+to its peer, and reads the second element through a tensor view. Rank 0 checks
+for `101.0` and rank 1 checks for `1.0`, with sentinel checks on the remaining
+output elements. The script runs the same kernel in AIV and mixed AIC/AIV modes.
+The default pytest suite imports the kernel for IR and bitcode linkage checks.
+
+From `python/tla_dist_dsl`, use the environment described above.
+
+```bash
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+ASCEND_RT_VISIBLE_DEVICES=0,1 TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+timeout --signal=TERM --kill-after=30s 180s \
+torchrun --standalone --nproc-per-node=2 \
+  tests/end_to_end/test_shmem_ptr.py
+```
+
+## Remote copy coverage and backend requirements
+
 MTE kernels launch one AIC and its two paired AIVs, selecting the mixed SHMEM
 hardware core barrier template used by the fused example. Only sub-block 0
 copies data; both AIVs join every device barrier.

@@ -16,11 +16,12 @@ from catlass import core_api as _core
 from catlass import runtime as _runtime
 from catlass._mlir import ir as mlir_ir  # type: ignore[import-not-found]
 from catlass.base_dsl.op import dsl_user_op
-from catlass.base_dsl.typing import Numeric
+from catlass.base_dsl.typing import Numeric, Pointer
 from catlass.core_api import IndexLike
 from catlass.execution_lowering import TlaLoweringError
 from catlass.params import AtomicMode
 from catlass.tla.typing import Tensor
+from catlass.types import PtrType
 
 from .params import CopyMode, CopyParams, CopyTransport, CopyWqePipe
 
@@ -72,6 +73,31 @@ def _as_integer_value(value: Any, width: int, *, loc: mlir_ir.Location | None) -
             loc=loc,
         ).results[0]
     raise TlaLoweringError(f"expected an i{width}-like communication operand, got {type(value).__name__}")
+
+
+@dsl_user_op
+def shmem_ptr(ptr: Pointer, peer: IndexLike, *, loc: mlir_ir.Location | None = None) -> Pointer:
+    """Translate a symmetric GM pointer into a GM pointer on a world PE.
+
+    Call in the scalar body of ``tla.vector()``. The caller supplies a valid PE
+    with a directly accessible mapping and arranges synchronization for later
+    accesses. The result retains the input pointee type.
+    """
+    name = "tla_dist.shmem_ptr"
+    _core._require_frontend_state(name)
+    _runtime._require_enclosing_region(name, "vector")
+    if _runtime._has_enclosing_region("vec.func"):
+        raise TlaLoweringError(f"{name} requires the scalar body of tla.vector()")
+
+    _core._require_category(name, "ptr", ptr, "pointer", 0)
+    source = _core._coerce_pointer_arg(ptr)
+    if source.memspace != _core.AddressSpace.gm:
+        raise TlaLoweringError(f"{name} requires a symmetric GM pointer")
+    pe = _as_integer_value(peer, 32, loc=loc)
+    # Use byte alignment because the peer mapping can have a different base.
+    result_type = PtrType.get(source.pointee, "gm", 1)
+    op = mlir_ir.Operation.create(name, operands=[source.value, pe], results=[result_type], loc=loc)
+    return _core._Pointer(op.results[0])
 
 
 def _tensor_descriptor(value: mlir_ir.Value) -> Any | None:

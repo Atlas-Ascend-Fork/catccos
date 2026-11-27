@@ -24,6 +24,7 @@ __version__ = _version.__version__
 barrier_all = _comm.barrier_all
 quiet = _comm.quiet
 remote_copy = _comm.remote_copy
+shmem_ptr = _comm.shmem_ptr
 CompileCallable = _compiler.CompileCallable
 compile = _compiler.compile
 
@@ -44,6 +45,7 @@ __all__ = [  # noqa: PLE0604 - the pinned upstream export list is intentional
     "params",
     "quiet",
     "remote_copy",
+    "shmem_ptr",
 ]
 
 

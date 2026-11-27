@@ -13,6 +13,19 @@ include "Dialect/TlaDist/IR/TlaDistDialect.td"
 class TlaDist_Op<string mnemonic, list<Trait> traits = []>
     : Op<TlaDistDialect, mnemonic, traits>;
 
+def TlaDist_Ptr : Type<CPred<"::llvm::isa<::tla::PtrType>($_self)">,
+                       "!tla.ptr", "::tla::PtrType">;
+
+def TlaDist_ShmemPtrOp : TlaDist_Op<"shmem_ptr", [MemoryEffects<[MemRead]>]> {
+  let summary = "Translate a symmetric GM pointer to its pointer on a peer";
+  let arguments = (ins TlaDist_Ptr:$ptr, I32:$peer);
+  let results = (outs TlaDist_Ptr:$remote);
+  let assemblyFormat = [{
+    $ptr `,` $peer attr-dict `:` qualified(type($ptr)) `->` qualified(type($remote))
+  }];
+  let hasVerifier = 1;
+}
+
 def TlaDist_RemoteCopyOp
     : TlaDist_Op<"remote_copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronously copy a tile to or from a symmetric peer";

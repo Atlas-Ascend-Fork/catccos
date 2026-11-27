@@ -17,6 +17,7 @@
 namespace tla_dist {
 
 std::unique_ptr<mlir::Pass> createValidateCommAutoSyncPass();
+std::unique_ptr<mlir::Pass> createLowerShmemPtrPass();
 std::unique_ptr<mlir::Pass> createPrepareCommFlagsPass();
 std::unique_ptr<mlir::Pass> createLowerCommPass();
 void registerTlaDistPasses();

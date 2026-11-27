@@ -31,6 +31,12 @@ surface consists of:
   `params.qp_idx`. `params` must be a `CopyParams` object; only these two
   fields are used. `mode`, `atomic_mode`, and `wqe_pipe` do not affect the wait.
   RDMA requires UB scratch and a compile-time integer `event_id`; UDMA accepts neither.
+- `shmem_ptr(ptr, peer)`: translate a pointer into the local SHMEM symmetric
+  device heap to the corresponding GM pointer on a world PE. The result
+  retains the pointee dtype, uses byte alignment metadata and can back a tensor
+  view. Call it in the scalar body of `tla.vector()`. The caller must ensure
+  the PE has a directly accessible mapping before invoking the device
+  `aclshmem_ptr` and arrange synchronization for subsequent data accesses.
 
 RDMA and UDMA support GM→GM GET/PUT on AIV and mixed-AIV kernels with explicit
 synchronization. RDMA availability and backend settings are read from the selected

@@ -56,9 +56,10 @@ void annotateAivRuntimeCall(func::FuncOp function)
     function->setAttr("llvm.emit_c_interface", UnitAttr::get(context));
 }
 
-func::FuncOp getOrCreateAivRuntimeCall(ModuleOp module, StringRef name, ArrayRef<Type> operandTypes)
+func::FuncOp getOrCreateAivRuntimeCall(
+    ModuleOp module, StringRef name, ArrayRef<Type> operandTypes, ArrayRef<Type> resultTypes = {})
 {
-    func::FuncOp function = ::tla::getOrCreateRuntimeCall(module, name, operandTypes);
+    func::FuncOp function = ::tla::getOrCreateRuntimeCall(module, name, operandTypes, resultTypes);
     annotateAivRuntimeCall(function);
     return function;
 }
@@ -372,6 +373,38 @@ private:
     DenseMap<Value, Value>& baseMemrefCache;
 };
 
+class LowerShmemPtrPass final : public PassWrapper<LowerShmemPtrPass, OperationPass<ModuleOp>> {
+public:
+    MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LowerShmemPtrPass)
+
+    StringRef getArgument() const override { return "tla_dist-lower-shmem-ptr"; }
+
+    void getDependentDialects(DialectRegistry& registry) const override
+    {
+        registry.insert<::tla::TlaDialect, func::FuncDialect, hivm::HIVMDialect, hacc::HACCDialect>();
+    }
+
+    void runOnOperation() override
+    {
+        ModuleOp module = getOperation();
+        SmallVector<ShmemPtrOp> translations;
+        module.walk([&](ShmemPtrOp op) { translations.push_back(op); });
+        if (translations.empty())
+            return;
+
+        IRRewriter rewriter(&getContext());
+        Type i64 = rewriter.getI64Type();
+        auto callee = getOrCreateAivRuntimeCall(module, "shmem_ptr_addr", {i64, rewriter.getI32Type()}, {i64});
+        for (ShmemPtrOp op : translations) {
+            rewriter.setInsertionPoint(op);
+            Location loc = op.getLoc();
+            Value address = rewriter.create<::tla::PtrToIntOp>(loc, i64, op.getPtr()).getResult();
+            Value remote = rewriter.create<func::CallOp>(loc, callee, ValueRange{address, op.getPeer()}).getResult(0);
+            rewriter.replaceOpWithNewOp<::tla::IntToPtrOp>(op, op.getRemote().getType(), remote);
+        }
+    }
+};
+
 class LowerQuietPattern final : public OpRewritePattern<QuietOp> {
 public:
     using OpRewritePattern::OpRewritePattern;
@@ -565,6 +598,8 @@ public:
 
 std::unique_ptr<Pass> createValidateCommAutoSyncPass() { return std::make_unique<ValidateCommAutoSyncPass>(); }
 
+std::unique_ptr<Pass> createLowerShmemPtrPass() { return std::make_unique<LowerShmemPtrPass>(); }
+
 std::unique_ptr<Pass> createPrepareCommFlagsPass() { return std::make_unique<PrepareCommFlagsPass>(); }
 
 std::unique_ptr<Pass> createLowerCommPass() { return std::make_unique<LowerCommPass>(); }
@@ -572,6 +607,7 @@ std::unique_ptr<Pass> createLowerCommPass() { return std::make_unique<LowerCommP
 void registerTlaDistPasses()
 {
     PassRegistration<ValidateCommAutoSyncPass>();
+    PassRegistration<LowerShmemPtrPass>();
     PassRegistration<PrepareCommFlagsPass>();
     PassRegistration<LowerCommPass>();
 }

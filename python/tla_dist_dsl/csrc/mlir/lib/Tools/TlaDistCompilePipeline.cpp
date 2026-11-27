@@ -33,18 +33,19 @@ namespace tla_dist {
 void buildTlaDistPipeline(mlir::OpPassManager& manager)
 {
     // Resolve synchronization ids before communication consumes flag values.
-    // Keep communication after descriptor materialization and before vector
-    // lowering, which removes the enclosing tla.vector regions.
     manager.addPass(createValidateCommAutoSyncPass());
     manager.addPass(::tla::createTlaLowerFuncPass());
     manager.addPass(::tla::createTlaInsertAutoMutexPass());
     manager.addPass(::tla::createTlaLowerExternCallPass());
+    // Expose the SHMEM address ABI to the shared pointer lowering.
+    manager.addPass(createLowerShmemPtrPass());
     manager.addPass(::tla::createTlaLowerPtrPass());
     manager.addPass(::tla::createTlaSplitMixedFuncPass());
     manager.addPass(::tla::createTlaLowerTensorDescPass());
     // Keep these adjacent: flag lowering must see reservations before DCE.
     manager.addPass(createPrepareCommFlagsPass());
     manager.addPass(::tla::createTlaLowerFlagBarrierToHivmPass());
+    // Tile communication needs materialized descriptors and the vector region.
     manager.addPass(createLowerCommPass());
     manager.addPass(::tla::createTlaLowerScalarAccessPass());
     manager.addPass(::tla::createTlaVectorRegionSimtPass());
