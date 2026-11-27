@@ -14,7 +14,10 @@ import struct
 from dataclasses import dataclass, replace
 
 from catccos import tla_dist  # isort: skip
+from catlass import core_api as _core
 from catlass import tla
+from catlass._mlir import ir as mlir_ir
+from catlass.base_dsl.op import dsl_user_op
 
 from catccos.tla_dist.params import CompareOp, CoreScope, SignalOp
 
@@ -108,9 +111,22 @@ extern "C" __aicore__ void sync_test_await_started(uint64_t addr) {
 """
 
 
+@dsl_user_op
+def _address(ptr, *, loc=None):
+    """Test-fixture raw-address ABI, independent of descriptor alignment."""
+    source = _core._coerce_pointer_arg(ptr)
+    result = mlir_ir.Operation.create(
+        "tla.ptrtoint",
+        operands=[source.value],
+        results=[mlir_ir.IntegerType.get_signless(64)],
+        loc=loc,
+    ).results[0]
+    return tla.Int64(result)
+
+
 @tla.extern(source=WRITER_SOURCE, name="sync_test_write")
 def backend_write(
-    ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm],
+    ptr: tla.Int64,
     bits: tla.Int64,
     tag: tla.Int32,
     delay: tla.Int32,
@@ -119,14 +135,14 @@ def backend_write(
 
 @tla.extern(source=WRITER_SOURCE, name="sync_test_observe")
 def backend_observe(
-    ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm],
-    out: tla.Pointer[tla.UInt8, tla.AddressSpace.gm],
+    ptr: tla.Int64,
+    out: tla.Int64,
     tag: tla.Int32,
 ) -> None: ...
 
 
 @tla.extern(source=WRITER_SOURCE, name="sync_test_await_started")
-def backend_await_started(ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm]) -> None: ...
+def backend_await_started(ptr: tla.Int64) -> None: ...
 
 
 @tla.extern(source=WRITER_SOURCE, name="sync_test_delay")
@@ -219,10 +235,10 @@ def typed_wait(
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
             if rank == producer:
                 if delay >= 0:
-                    backend_await_started(tla.recast_ptr(started.ptr, dtype=tla.UInt8))
+                    backend_await_started(_address(started.ptr))
                     pointer = tla_dist.shmem_ptr(counter.ptr + index, peer)
                     backend_write(
-                        tla.recast_ptr(pointer, dtype=tla.UInt8),
+                        _address(pointer),
                         bits,
                         tuple(DTYPES).index(case.dtype),
                         delay,
@@ -230,11 +246,9 @@ def typed_wait(
                     if tla.const_expr(case.mixed):
                         p8 = tla_dist.shmem_ptr(counter8.ptr, peer)
                         pf = tla_dist.shmem_ptr(counterf.ptr, peer)
+                        backend_write(_address(p8), tla.Int64(249), 0, 0)
                         backend_write(
-                            tla.recast_ptr(p8, dtype=tla.UInt8), tla.Int64(249), 0, 0
-                        )
-                        backend_write(
-                            tla.recast_ptr(pf, dtype=tla.UInt8),
+                            _address(pf),
                             tla.Int64(1067450368),
                             8,
                             0,
@@ -242,26 +256,24 @@ def typed_wait(
             else:
                 if delay >= 0:
                     entered = tla_dist.shmem_ptr(started.ptr, peer)
-                    backend_write(
-                        tla.recast_ptr(entered, dtype=tla.UInt8), tla.Int64(1), 2, 0
-                    )
+                    backend_write(_address(entered), tla.Int64(1), 2, 0)
                 tla_dist.wait_until(counter_slot, case.threshold, cmp=case.cmp)
                 backend_observe(
-                    tla.recast_ptr(counter.ptr + index, dtype=tla.UInt8),
-                    snapshot.ptr,
+                    _address(counter.ptr + index),
+                    _address(snapshot.ptr),
                     tuple(DTYPES).index(case.dtype),
                 )
                 if tla.const_expr(case.mixed):
                     tla_dist.wait_until(slot8, -7)
                     backend_observe(
-                        tla.recast_ptr(counter8.ptr, dtype=tla.UInt8),
-                        snapshot.ptr + 16,
+                        _address(counter8.ptr),
+                        _address(snapshot.ptr + 16),
                         0,
                     )
                     tla_dist.wait_until(slotf, 1.25)
                     backend_observe(
-                        tla.recast_ptr(counterf.ptr, dtype=tla.UInt8),
-                        snapshot.ptr + 32,
+                        _address(counterf.ptr),
+                        _address(snapshot.ptr + 32),
                         8,
                     )
                 observed[0, 0] = 1
@@ -284,7 +296,7 @@ def collective(
         else:
             flat = tla.arch.block_idx()
         backend_write(
-            tla.recast_ptr(observed.ptr + (flat + 2) * 16, dtype=tla.UInt8),
+            _address(observed.ptr + (flat + 2) * 16),
             tla.Int64(1),
             2,
             0,
