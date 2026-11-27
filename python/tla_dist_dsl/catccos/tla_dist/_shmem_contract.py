@@ -1,4 +1,5 @@
 """Fixed SHMEM capabilities verified against source headers by CMake."""
+
 import json
 from pathlib import Path
 
