@@ -63,7 +63,7 @@ def test_sync_kernel_links(tmp_path,dtype,mode):
     artifact=tla_dist.compile(wait_kernel,type_args=(slot(dtype),dtype(1),mode),
         arch_scope="aic.c310" if mode=="mix" else "aiv.c310",cache_dir=tmp_path)
     assert artifact.kernel_binary_path.is_file()
-    assert "tla_dist_wait_" in artifact.__mlir__
+    assert "tla_dist_wait_" in artifact.artifacts.LLVM
 
 
 @pytest.mark.parametrize("mode,op",[(m,o) for m in ("aiv","mix") for o in ("local","sync","barrier")]+[("aiv","invalid")])
@@ -72,7 +72,9 @@ def test_collective_kernel_links(tmp_path,mode,op):
     if _execution._find_hivmc_a5() is None: pytest.skip("configure CANN for device linkage")
     artifact=tla_dist.compile(collective_kernel,type_args=(mode,op),arch_scope="aic.c310" if mode=="mix" else "aiv.c310",cache_dir=tmp_path)
     assert artifact.kernel_binary_path.is_file()
-    text=artifact.__mlir__
+    text=artifact.artifacts.LLVM
+    from catccos.tla_dist.compiler import SyncCompiledFunction
+    assert isinstance(artifact, SyncCompiledFunction)
     if mode=="mix":
         assert "tla_dist_"+({"local":"local_sync"}.get(op,op))+"_mix_aic" in text
         assert "tla_dist_"+({"local":"local_sync"}.get(op,op))+"_mix_aiv" in text
@@ -170,8 +172,8 @@ def test_mixed_wait_types_share_one_kernel(tmp_path):
             tla_dist.wait_until(other,1)
     artifact=tla_dist.compile(kernel,type_args=(slot(tla.UInt64),slot(tla.Int32),tla.UInt64(1)),cache_dir=tmp_path)
     assert artifact.kernel_binary_path.is_file()
-    assert "tla_dist_wait_u64" in artifact.__mlir__
-    assert "tla_dist_wait_i32" in artifact.__mlir__
+    assert "tla_dist_wait_u64" in artifact.artifacts.LLVM
+    assert "tla_dist_wait_i32" in artifact.artifacts.LLVM
 
 
 def test_handwritten_ir_team_upper_bound_rejected(tmp_path):

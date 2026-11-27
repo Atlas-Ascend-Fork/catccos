@@ -172,7 +172,9 @@ def _catccos_execution_hooks() -> Iterator[None]:
         # Cache lookup precedes mixed-function splitting. An initial AIC target
         # can become MIX, so include its mixed AIV template in the fingerprint.
         template_runtime = replace(runtime, kernel_mode="mix") if runtime.kernel_mode == "aic" else runtime
-        if runtime.kernel_mode == "aiv" and any(f'"tla_dist.{name}"' in kwargs["tlair_mlir"] for name in ("local_sync", "sync", "barrier")):
+        if runtime.kernel_mode == "aiv" and '"tla.cube"' in kwargs["tlair_mlir"]:
+            template_runtime = replace(runtime, kernel_mode="mix")
+        elif runtime.kernel_mode == "aiv" and any(f'"tla_dist.{name}"' in kwargs["tlair_mlir"] for name in ("local_sync", "sync", "barrier")):
             template_runtime = replace(runtime, kernel_mode="mix_aiv")
         template = _resolve_base_bitcode(template_runtime)
         kwargs["tlair_mlir"] = (
@@ -266,7 +268,7 @@ class CompileCallable:
                 decorator_location=func.decorator_location,
             )
         if artifact.kernel_mode == "mix_aiv" or (isinstance(artifact, JitCompiledFunction) and any(
-            name in artifact.__mlir__ for name in ("tla_dist_local_sync_", "tla_dist_sync_", "tla_dist_barrier_")
+            name in artifact.artifacts.LLVM for name in ("tla_dist_local_sync_", "tla_dist_sync_", "tla_dist_barrier_")
         )):
             return SyncCompiledFunction(jit_module=artifact.jit_module, artifacts=artifact.artifacts)
         return artifact
