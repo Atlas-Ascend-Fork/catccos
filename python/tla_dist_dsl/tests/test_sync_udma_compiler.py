@@ -42,7 +42,7 @@ def test_udma_default_domain_fixture_links(tmp_path, mixed, action, mode):
     require_native()
     if _execution._find_hivmc_a5() is None:
         pytest.skip("configure CANN for device linkage")
-    payload = fake(tla.Float32, (14, 24), (32, 1))
+    payload = fake(tla.Float32, (14 * 32 - 8,), (1,))
     work = fake(tla.Float32, (8, 16))
     flag = fake(tla.Float32, (1, 16))
     matrix = fake(tla.Float16, (16, 16))
@@ -84,11 +84,11 @@ def test_udma_publication_fixture_links(tmp_path, mixed):
         pytest.skip("configure CANN for device linkage")
     matrix = fake(tla.Float16, (16, 16))
     args = (
-        fake(tla.Float32, (14, 24), (32, 1)),
-        fake(tla.Float32, (702, 24), (32, 1)),
-        fake(tla.Int32, (1, 48), (64, 1)),
-        fake(tla.Int32, (1, 48), (64, 1)),
-        fake(tla.Float32, (702, 24), (32, 1)),
+        fake(tla.Float32, (14 * 32 - 8,), (1,)),
+        fake(tla.Float32, (702 * 32 - 8,), (1,)),
+        fake(tla.Int32, (1, 48), (48, 1)),
+        fake(tla.Int32, (1, 48), (48, 1)),
+        fake(tla.Float32, (702 * 32 - 8,), (1,)),
         matrix,
         matrix,
         fake(tla.Float32, (32, 16)),

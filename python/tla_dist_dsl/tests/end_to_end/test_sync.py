@@ -564,6 +564,29 @@ def _view(tensor, *, column=False):
     return tla_dist.from_dlpack(tensor, layout_tag=tla.arch.ColumnMajor if column else tla.arch.RowMajor)
 
 
+def _padded_view(root):
+    """Bind a zero-copy storage window at offset 8 through the public bridge.
+
+    Pinned from_dlpack accepts compact storage, then kernel make_tensor selects
+    the real 5x13 tiles with pitch 32. view(-1), unlike a flatten/contiguous copy,
+    must alias the original allocation; slicing eight elements preserves the
+    required nonzero DLPack storage offset and every outer/padding guard.
+    """
+    if len(root.shape) != 2 or root.shape[1] != 32 or root.shape[0] < 2:
+        raise ValueError("padded fixture requires at least two physical 32-element rows")
+    if tuple(root.stride()) != (32, 1):
+        raise ValueError("padded fixture requires compact physical storage, without a copy")
+    window = root.view(-1)[8:]
+    if (
+        not window.is_contiguous()
+        or window.storage_offset() != root.storage_offset() + 8
+        or window.data_ptr() - root.data_ptr() != 8 * root.element_size()
+        or window.untyped_storage().data_ptr() != root.untyped_storage().data_ptr()
+    ):
+        raise ValueError("padded fixture lost its zero-copy storage offset")
+    return _view(window)
+
+
 def _cube_inputs(runtime, blocks):
     torch = runtime.torch
     device = f"npu:{os.environ['LOCAL_RANK']}"
@@ -953,18 +976,15 @@ def _publication(runtime, *, transport):
             source = expected_source.to(payload.device)
             output = torch.full_like(source, sentinel)
             lhs, rhs, cube_result = _cube_inputs(runtime, 2)
-            args = tuple(
-                _view(t)
-                for t in (
-                    payload[:, 8:],
-                    source[:, 8:],
-                    flag[:, 16:],
-                    ack[:, 16:],
-                    output[:, 8:],
-                    lhs,
-                    rhs,
-                    cube_result,
-                )
+            args = (
+                _padded_view(payload),
+                _padded_view(source),
+                _view(flag[:, 16:]),
+                _view(ack[:, 16:]),
+                _padded_view(output),
+                _view(lhs),
+                _view(rhs),
+                _view(cube_result),
             ) + (
                 tla.Int32(1 - runtime.rank),
                 tla.Int32(runtime.rank),

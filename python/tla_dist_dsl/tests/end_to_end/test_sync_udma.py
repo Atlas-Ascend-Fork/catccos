@@ -225,21 +225,14 @@ def run_case(runtime, action):
                 work_dst = torch.full_like(work_source, sentinel)
                 work_seen = torch.full_like(work_source, sentinel)
                 lhs, rhs, cube_result = common._cube_inputs(runtime, 2)
-                args = tuple(
-                    common._view(t)
-                    for t in (
-                        destination[:, 8:],
-                        source[:, 8:],
-                        observed[:, 8:],
-                        work_source,
-                        work_dst,
-                        work_seen,
-                        control,
-                        control_source,
-                        lhs,
-                        rhs,
-                        cube_result,
-                    )
+                args = (
+                    common._padded_view(destination),
+                    common._padded_view(source),
+                    common._padded_view(observed),
+                    *(
+                        common._view(t)
+                        for t in (work_source, work_dst, work_seen, control, control_source, lhs, rhs, cube_result)
+                    ),
                 ) + (tla.Int32(1 - runtime.rank), case)
                 artifact = common._compile(runtime, network, args, mixed=mixed)
                 common._launch(runtime, artifact, args[:-1], 2)

@@ -331,11 +331,11 @@ def test_acceptance_fixture_kernel_links(tmp_path, case):
         kernel = acceptance.signal_case
     elif case.startswith("publication"):
         args = (
-            fake(tla.Float32, (14, 24), (32, 1)),
-            fake(tla.Float32, (702, 24), (32, 1)),
-            fake(tla.Int32, (1, 48), (64, 1)),
-            fake(tla.Int32, (1, 48), (64, 1)),
-            fake(tla.Float32, (702, 24), (32, 1)),
+            fake(tla.Float32, (14 * 32 - 8,), (1,)),
+            fake(tla.Float32, (702 * 32 - 8,), (1,)),
+            fake(tla.Int32, (1, 48), (48, 1)),
+            fake(tla.Int32, (1, 48), (48, 1)),
+            fake(tla.Float32, (702 * 32 - 8,), (1,)),
             lhs,
             rhs,
             cube,
