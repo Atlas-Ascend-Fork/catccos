@@ -438,14 +438,18 @@ def _index32(
     if isinstance(original, bool):
         raise TlaLoweringError(f"{name} requires an integer, got bool")
     if isinstance(original, Numeric) and (
-        not type(original).is_integer
-        or type(original).width > 32
-        or type(original).width == 1
+        not type(original).is_integer or type(original).width == 1
     ):
         raise TlaLoweringError(
             f"{name} requires Index or an integer no wider than 32 bits"
         )
     resolved, _ = _resolve_integer(original)
+    if (
+        isinstance(original, Numeric)
+        and type(original).width > 32
+        and not isinstance(resolved, int)
+    ):
+        raise TlaLoweringError(f"{name} runtime integer must be no wider than 32 bits")
     if isinstance(resolved, int):
         if not minimum <= resolved <= maximum:
             raise TlaLoweringError(f"{name} constant must be in [{minimum}, {maximum}]")

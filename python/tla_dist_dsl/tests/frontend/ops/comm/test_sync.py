@@ -220,3 +220,23 @@ def test_team_handle_constant_boundaries(team):
             tla_dist.sync(team=team)
 
     assert '"tla_dist.sync"' in kernel.dump_mlir(type_args=())
+
+
+@pytest.mark.parametrize("team", [tla.Int64(0), tla.UInt64(1)])
+def test_known_wide_integer_team_can_be_checked_before_narrowing(team):
+    @tla.kernel
+    def kernel():
+        with tla.vector():
+            tla_dist.sync(team=team)
+
+    assert '"tla_dist.sync"' in kernel.dump_mlir(type_args=())
+
+
+def test_runtime_wide_team_is_rejected():
+    @tla.kernel
+    def kernel(team: tla.Int64):
+        with tla.vector():
+            tla_dist.sync(team=team)
+
+    with pytest.raises(TlaLoweringError, match="runtime integer"):
+        kernel.dump_mlir(type_args=(tla.Int64(0),))

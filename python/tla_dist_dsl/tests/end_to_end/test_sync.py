@@ -77,7 +77,8 @@ template<class T> __aicore__ void observeSlot(uint64_t addr, uint64_t out) {
         AscendC::DcciDst::CACHELINE_OUT>(slot);
     union { uint64_t bits; T value; } value;
     value.bits = 0;
-    value.value = slot.GetValue(0);
+    value.value = *reinterpret_cast<__gm__ volatile T*>(addr);
+    __asm__ __volatile__("" ::: "memory");
     AscendC::GlobalTensor<uint64_t> result;
     result.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(out));
     result.SetValue(0,value.bits);
@@ -105,7 +106,7 @@ extern "C" __aicore__ void sync_test_await_started(uint64_t addr) {
     do {
         AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
             AscendC::DcciDst::CACHELINE_OUT>(started);
-    } while (started.GetValue(0)!=1);
+    } while (*reinterpret_cast<__gm__ volatile int32_t*>(addr)!=1);
 }
 
 """
