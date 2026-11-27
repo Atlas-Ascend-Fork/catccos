@@ -6,9 +6,10 @@ uses neither remote_copy nor the cancelled UInt64 copy implementation.
 """
 # ruff: noqa: BLE001
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import fnmatch
 import os
+import operator
 import struct
 from catccos import tla_dist  # isort: skip
 from catccos.tla_dist.params import CoreScope, CompareOp, SignalOp
@@ -42,11 +43,53 @@ extern "C" __aicore__ void sync_test_write(uint64_t addr, uint64_t bits, int32_t
         case 8: storeSlot<float>(addr,bits); break;
     }
 }
+template<class T> __aicore__ void observeSlot(uint64_t addr, uint64_t out) {
+    AscendC::GlobalTensor<T> slot;
+    slot.SetGlobalBuffer(reinterpret_cast<__gm__ T*>(addr));
+    AscendC::DataCacheCleanAndInvalid<T, AscendC::CacheLine::SINGLE_CACHE_LINE,
+        AscendC::DcciDst::CACHELINE_OUT>(slot);
+    union { uint64_t bits; T value; } value;
+    value.bits = 0;
+    value.value = slot.GetValue(0);
+    AscendC::GlobalTensor<uint64_t> result;
+    result.SetGlobalBuffer(reinterpret_cast<__gm__ uint64_t*>(out));
+    result.SetValue(0,value.bits);
+    AscendC::DataCacheCleanAndInvalid<uint64_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
+        AscendC::DcciDst::CACHELINE_OUT>(result);
+}
+extern "C" __aicore__ void sync_test_observe(uint64_t addr, uint64_t out, int32_t tag) {
+    switch(tag) {
+        case 0: observeSlot<int8_t>(addr,out); break; case 1: observeSlot<int16_t>(addr,out); break;
+        case 2: observeSlot<int32_t>(addr,out); break; case 3: observeSlot<int64_t>(addr,out); break;
+        case 4: observeSlot<uint8_t>(addr,out); break; case 5: observeSlot<uint16_t>(addr,out); break;
+        case 6: observeSlot<uint32_t>(addr,out); break; case 7: observeSlot<uint64_t>(addr,out); break;
+        case 8: observeSlot<float>(addr,out); break;
+    }
+}
+// Independent test fixture: publish entry into the typed wait before the
+// producer starts its bounded delay. This prevents a late receiver launch
+// from turning a broken early-return wait into an accidental passing trial.
+extern "C" __aicore__ void sync_test_await_started(uint64_t addr) {
+    AscendC::GlobalTensor<int32_t> started;
+    started.SetGlobalBuffer(reinterpret_cast<__gm__ int32_t*>(addr));
+    do {
+        AscendC::DataCacheCleanAndInvalid<int32_t, AscendC::CacheLine::SINGLE_CACHE_LINE,
+            AscendC::DcciDst::CACHELINE_OUT>(started);
+    } while (started.GetValue(0)!=1);
+}
+
 '''
 
 @tla.extern(source=WRITER_SOURCE, name="sync_test_write")
 def backend_write(ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm], bits: tla.UInt64,
                   tag: tla.Int32, delay: tla.Int32) -> None: ...
+
+@tla.extern(source=WRITER_SOURCE, name="sync_test_observe")
+def backend_observe(ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm],
+                    out: tla.Pointer[tla.UInt8, tla.AddressSpace.gm], tag: tla.Int32) -> None: ...
+
+@tla.extern(source=WRITER_SOURCE, name="sync_test_await_started")
+def backend_await_started(ptr: tla.Pointer[tla.UInt8, tla.AddressSpace.gm]) -> None: ...
 
 @dataclass(frozen=True)
 class WaitCase:
@@ -60,13 +103,13 @@ class WaitCase:
     rank1: bool = False
 
 @tla.kernel
-def typed_wait(counter: tla.Tensor, observed: tla.Tensor, rank: tla.Int32, producer: tla.Int32,
+def typed_wait(counter: tla.Tensor, observed: tla.Tensor, snapshot: tla.Tensor, started: tla.Tensor, rank: tla.Int32, producer: tla.Int32,
                peer: tla.Int32, index: tla.Int32, bits: tla.UInt64, delay: tla.Int32,
                case: tla.Constexpr[WaitCase]):
     if tla.const_expr(case.mixed):
         with tla.cube():
             # Actual independent cube-side progress is observable after launch.
-            if tla.arch.block_idx()==0: observed[0, 1] = 2
+            if tla.arch.block_idx()==0: observed[0, 16] = 2
     if tla.const_expr(case.rank1):
         counter_slot = tla.tile_view(counter, tla.make_shape(1), tla.make_coord(index))
     else:
@@ -74,24 +117,31 @@ def typed_wait(counter: tla.Tensor, observed: tla.Tensor, rank: tla.Int32, produ
     with tla.vector():
         if tla.arch.block_idx() == 0 and tla.arch.sub_block_idx() == 0:
             if rank == producer:
-                pointer = tla_dist.shmem_ptr(counter.ptr + index, peer)
-                backend_write(tla.recast_ptr(pointer, dtype=tla.UInt8), bits,
-                    tuple(DTYPES).index(case.dtype), delay)
+                if delay >= 0:
+                    backend_await_started(tla.recast_ptr(started.ptr, dtype=tla.UInt8))
+                    pointer = tla_dist.shmem_ptr(counter.ptr + index, peer)
+                    backend_write(tla.recast_ptr(pointer, dtype=tla.UInt8), bits,
+                        tuple(DTYPES).index(case.dtype), delay)
             else:
+                if delay >= 0:
+                    entered = tla_dist.shmem_ptr(started.ptr, peer)
+                    backend_write(tla.recast_ptr(entered, dtype=tla.UInt8), tla.UInt64(1), 2, 0)
                 tla_dist.wait_until(counter_slot, case.threshold, cmp=case.cmp)
+                backend_observe(tla.recast_ptr(counter.ptr+index, dtype=tla.UInt8),
+                    snapshot.ptr, tuple(DTYPES).index(case.dtype))
                 observed[0,0] = 1
 
 @tla.kernel
 def collective(observed: tla.Tensor, case: tla.Constexpr[str], team: tla.Int32):
     if tla.const_expr(case.startswith("mix")):
         with tla.cube():
-            if tla.arch.block_idx()==0: observed[0,1] = 2
+            if tla.arch.block_idx()==0: observed[0,16] = 2
     with tla.vector():
         if tla.const_expr(case.startswith("mix")):
             flat = tla.arch.block_idx() * 2 + tla.arch.sub_block_idx()
         else:
             flat = tla.arch.block_idx()
-        observed[0,flat + 2] = 1
+        backend_write(tla.recast_ptr(observed.ptr+(flat+2)*16,dtype=tla.UInt8), tla.UInt64(1), 2, 0)
         if tla.const_expr(not case.startswith("mix")):
             if tla.const_expr(case.endswith("local")): tla_dist.local_sync()
             elif tla.const_expr(case.endswith("barrier")): tla_dist.barrier(team=team)
@@ -176,9 +226,13 @@ def manifest():
         yield f"collective/{scope}-invalid", ("collective",f"{scope}-barrier",-1,2)
     for dtype in DTYPES:
         for cmp in CompareOp:
-            threshold = {CompareOp.EQ:7,CompareOp.NE:6,CompareOp.GT:6,CompareOp.GE:7,CompareOp.LT:8,CompareOp.LE:7}[cmp]
-            initial = {CompareOp.EQ:0,CompareOp.NE:6,CompareOp.GT:0,CompareOp.GE:0,CompareOp.LT:9,CompareOp.LE:9}[cmp]
-            yield f"typed/{dtype}/{cmp.name}", ("wait", WaitCase(dtype,cmp,threshold,initial,7))
+            width=DTYPES[dtype].width
+            threshold=2**(width-1) if dtype.startswith("UInt") else 0
+            target={CompareOp.EQ:threshold,CompareOp.NE:threshold+1,CompareOp.GT:threshold+1,
+                CompareOp.GE:threshold,CompareOp.LT:threshold-1,CompareOp.LE:threshold}[cmp]
+            initial={CompareOp.EQ:threshold+1,CompareOp.NE:threshold,CompareOp.GT:threshold-1,
+                CompareOp.GE:threshold-1,CompareOp.LT:threshold+1,CompareOp.LE:threshold+1}[cmp]
+            yield f"typed/{dtype}/{cmp.name}", ("wait", WaitCase(dtype,cmp,threshold,initial,target))
         width=DTYPES[dtype].width
         boundary = 2**width-1 if dtype.startswith("UInt") else (-2**(width-1) if dtype.startswith("Int") else float("inf"))
         initial = 0 if boundary != 0 else 1
@@ -222,37 +276,61 @@ def _wait(runtime,case):
     name=case.dtype
     fmt=FORMATS[name]; size=struct.calcsize(fmt)
     raw=runtime.shmem.symmetric_tensor((1,256),torch.uint8)
-    output=torch.zeros((1,4),dtype=torch.int32,device=raw.device)
-    # Torch's byte view constructs metadata only; no UInt64 NPU arithmetic or copy is required.
+    started=runtime.shmem.symmetric_tensor((1,16),torch.int32)
+    output=torch.zeros((1,32),dtype=torch.int32,device=raw.device)
+    snapshot=torch.empty((1,8),dtype=torch.uint8,device=raw.device)
     typed=raw.view(getattr(torch,{"Float32":"float32"}.get(name,name.lower())))
     counter=typed[:,4:] if case.offset else typed
     if case.rank1: counter=counter.reshape(-1)
     index=3 if case.offset else 0
     byte_offset=(4+index)*size if case.offset else 0
-    artifact=None
+    variants=[case]
+    if case.cmp in (CompareOp.GE,CompareOp.LE):
+        variants.append(replace(case,target=case.threshold+(1 if case.cmp is CompareOp.GE else -1)))
+    if case.dtype=="Float32" and case.target==float("inf"):
+        variants.append(replace(case,target=-float("inf"),threshold=-float("inf")))
+    launches=0
     try:
-        for producer in (0,1):
-            for delayed in (False,True):
-                expected=bytearray([0xA5]*256)
-                expected[byte_offset:byte_offset+size]=struct.pack("<"+fmt,case.initial)
-                raw.copy_(torch.tensor(list(expected),dtype=torch.uint8).reshape(1,256))
-                output.zero_()
-                bits=int.from_bytes(struct.pack("<"+fmt,case.target),"little")
-                args=(_view(counter),_view(output),tla.Int32(runtime.rank),tla.Int32(producer),
-                    tla.Int32(1-runtime.rank),tla.Int32(index),tla.UInt64(bits),tla.Int32(1000000 if delayed else 0))
-                if artifact is None: artifact=_compile(runtime,typed_wait,(*args,case),mixed=case.mixed)
-                _launch(runtime,artifact,args,1)
-                if runtime.rank != producer:
-                    expected[byte_offset:byte_offset+size]=struct.pack("<"+fmt,case.target)
-                actual=bytes(raw.cpu().reshape(-1).tolist())
-                error=None
-                if actual != bytes(expected): error=f"typed writer/address/guard mismatch {name}/{case.cmp.name}"
-                seen=output.cpu()[0].tolist()
-                if seen[0] != (1 if runtime.rank != producer else 0): error=f"wait return marker mismatch {seen}"
-                if case.mixed and seen[1] != 2: error=f"cube progress missing {seen}"
-                runtime.check_errors(error)
-                if runtime.rank == 0: print(f"DETAIL producer={producer} delayed={delayed}",flush=True)
-    finally: runtime.shmem.free(raw)
+        for variant in variants:
+            artifact=None
+            for producer in (0,1):
+                for delayed in (False,True):
+                    expected=bytearray([0xA5]*256)
+                    initial=variant.initial if delayed else variant.target
+                    threshold=struct.unpack("<f",struct.pack("<f",variant.threshold))[0] if name=="Float32" else variant.threshold
+                    predicate={CompareOp.EQ:operator.eq,CompareOp.NE:operator.ne,CompareOp.GT:operator.gt,
+                        CompareOp.GE:operator.ge,CompareOp.LT:operator.lt,CompareOp.LE:operator.le}[variant.cmp]
+                    assert predicate(initial,threshold) is (not delayed)
+                    assert predicate(variant.target,threshold)
+                    expected[byte_offset:byte_offset+size]=struct.pack("<"+fmt,initial)
+                    raw.copy_(torch.tensor(list(expected),dtype=torch.uint8).reshape(1,256))
+                    output.zero_();snapshot.fill_(0x5A);started.zero_()
+                    bits=int.from_bytes(struct.pack("<"+fmt,variant.target),"little")
+                    args=(_view(counter),_view(output),_view(snapshot),_view(started),tla.Int32(runtime.rank),
+                        tla.Int32(producer),tla.Int32(1-runtime.rank),tla.Int32(index),
+                        tla.UInt64(bits),tla.Int32(1000000 if delayed else -1))
+                    if artifact is None: artifact=_compile(runtime,typed_wait,(*args,variant),mixed=variant.mixed)
+                    _launch(runtime,artifact,args,1)
+                    launches+=1
+                    receiver=runtime.rank!=producer
+                    if receiver: expected[byte_offset:byte_offset+size]=struct.pack("<"+fmt,variant.target)
+                    actual=bytes(raw.cpu().reshape(-1).tolist())
+                    error=None
+                    if actual!=bytes(expected): error=f"typed writer/address/guard mismatch {name}/{variant.cmp.name}"
+                    seen=output.cpu()[0].tolist()
+                    if seen[0]!=(1 if receiver else 0): error=f"wait return marker mismatch {seen}"
+                    if variant.mixed and seen[16]!=2: error=f"cube progress missing {seen}"
+                    wanted=struct.pack("<"+fmt,variant.target).ljust(8,b"\0") if receiver else bytes([0x5A]*8)
+                    observed=bytes(snapshot.cpu().reshape(-1).tolist())
+                    if receiver:
+                        captured=struct.unpack("<"+fmt,observed[:size])[0]
+                        if not predicate(captured,threshold): error=f"wait returned before condition: {captured} {variant.cmp.name} {threshold}"
+                    if observed!=wanted: error=f"wait returned with wrong immediate counter value: {observed.hex()} expected {wanted.hex()}"
+                    runtime.check_errors(error)
+                    if runtime.rank==0: print(f"DETAIL producer={producer} delayed={delayed} target={variant.target}",flush=True)
+    finally:
+        runtime.shmem.free(started);runtime.shmem.free(raw)
+    return launches
 
 
 def _run(runtime,item,*,local_only=False):
@@ -263,13 +341,13 @@ def _run(runtime,item,*,local_only=False):
         if blocks==0:
             from catccos.tla_dist._sync_runtime import resident_block_limit
             blocks=resident_block_limit(int(os.environ["LOCAL_RANK"]),paired=False)
-        observed=torch.zeros((1,128),dtype=torch.int32,device=f"npu:{os.environ['LOCAL_RANK']}")
+        observed=torch.zeros((1,1056),dtype=torch.int32,device=f"npu:{os.environ['LOCAL_RANK']}")
         args=(_view(observed),case,tla.Int32(team))
         artifact=_compile(runtime,collective,args,mixed=case.startswith("mix"))
         _launch(runtime,artifact,(args[0],args[2]),blocks,local_only=local_only)
         actual=observed.cpu()[0].tolist()
         expected=blocks*(2 if case.startswith("mix") else 1)
-        runtime.check_errors(None if (local_only and runtime.rank!=0) or (actual[0]==3 and sum(actual[2:])==expected) else f"participant markers {actual}")
+        runtime.check_errors(None if (local_only and runtime.rank!=0) or (actual[0]==3 and sum(actual[32::16])==expected) else f"participant markers {actual}")
     elif item[0]=="signal":
         _,add,blocks=item
         flag=runtime.shmem.symmetric_tensor((1,16),torch.int32)
@@ -328,9 +406,9 @@ def main():
         for name,item in cases:
             if runtime.rank==0: print(f"RUN  {name}",flush=True)
             local_only=name.startswith("p0/")
-            _run(runtime,item,local_only=local_only)
+            launches=_run(runtime,item,local_only=local_only)
             if not local_only or runtime.rank==0:
-                print(f"DEVICE_PASS {name} rank={runtime.rank} launches={4 if item[0]=='wait' else 1}",flush=True)
+                print(f"DEVICE_PASS {name} rank={runtime.rank} launches={launches if launches is not None else 1}",flush=True)
             runtime.dist.barrier()
             if runtime.rank==0: print(f"PASS {name}",flush=True)
         if runtime.rank==0: print(f"{len(cases)} passed",flush=True)
