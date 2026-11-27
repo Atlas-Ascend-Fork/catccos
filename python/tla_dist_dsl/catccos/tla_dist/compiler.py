@@ -87,7 +87,11 @@ def _resolve_base_bitcode(runtime: Any) -> str:
     aiv_kind = "mix_aiv" if runtime.kernel_mode in ("mix", "mix_aiv") else "aiv"
     aiv = find_packaged(f"meta_op.{aiv_kind}.c310.bc")
     if aic is None:
-        raw_aic = build_dir / "bc" / f"meta_op.{aic_kind}.c310.bc"
+        raw_aic = (
+            (build_dir / "bc" / "meta_op.mix_aic.c310.bc")
+            if runtime.kernel_mode == "mix"
+            else (build_dir / "tla" / "bc" / "meta_op.aic.c310.bc")
+        )
         if raw_aic.is_file():
             aic = raw_aic.resolve()
     if aiv is None:
@@ -105,7 +109,7 @@ def _resolve_base_bitcode(runtime: Any) -> str:
 
     raise TlaRuntimeUnavailableError(
         "C310 base TLA bitcode was not found in the TLA_DIST build/package tree. "
-        f"Required AIV template: meta_op.{aiv_kind}.c310.bc. "
+        f"Required templates: meta_op.{aic_kind}.c310.bc, meta_op.{aiv_kind}.c310.bc. "
         "Run python/tla_dist_dsl/build.sh or set TLA_DIST_DSL_BASE_BITCODE."
     )
 

@@ -58,6 +58,7 @@ class BitcodeSelectionTests(unittest.TestCase):
             "replace": replace,
             "Iterator": Iterator,
             "bridge_path": lambda: None,
+            "SYNC_RESOURCE_ABI": 1,
         }
         exec(compile(functions, str(source), "exec"), self.scope)
         self.env = patch.dict(os.environ)
@@ -72,7 +73,10 @@ class BitcodeSelectionTests(unittest.TestCase):
 
     def resolve(self, mode):
         return self.scope["_resolve_base_bitcode"](
-            Runtime(kernel_mode=mode, arch_scope="aiv.c310" if mode == "aiv" else "aic.c310")
+            Runtime(
+                kernel_mode=mode,
+                arch_scope="aiv.c310" if mode in ("aiv", "mix_aiv") else "aic.c310",
+            )
         )
 
     def test_packaged_templates_are_separated_by_mode(self):
@@ -80,9 +84,11 @@ class BitcodeSelectionTests(unittest.TestCase):
         aic = self.write(bc / "meta_op.aic.c310.bc")
         aiv = self.write(bc / "meta_op.aiv.c310.bc")
         mixed = self.write(bc / "meta_op.mix_aiv.c310.bc")
+        mixed_aic = self.write(bc / "meta_op.mix_aic.c310.bc")
+        self.assertEqual(self.resolve("mix_aiv"), mixed)
         self.assertEqual(self.resolve("aiv"), aiv)
         self.assertEqual(self.resolve("aic"), aic)
-        self.assertEqual(self.resolve("mix"), f"{aic},{mixed}")
+        self.assertEqual(self.resolve("mix"), f"{mixed_aic},{mixed}")
 
     def test_mix_does_not_fall_back_to_soft_barrier(self):
         bc = self.package / "bc"
@@ -93,12 +99,21 @@ class BitcodeSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "meta_op.mix_aiv.c310.bc"):
             self.assertIsNotNone(self.resolve("mix"))
 
+    def test_mix_requires_its_aic_sync_template(self):
+        bc = self.package / "bc"
+        self.write(bc / "meta_op.aic.c310.bc")
+        self.write(bc / "meta_op.mix_aiv.c310.bc")
+        with self.assertRaisesRegex(RuntimeError, "meta_op.mix_aic.c310.bc"):
+            self.resolve("mix")
+
     def test_raw_build_fallback_uses_mixed_template(self):
         build = self.root / "csrc" / "mlir" / "build"
         aic = self.write(build / "tla" / "bc" / "meta_op.aic.c310.bc")
         aiv = self.write(build / "bc" / "meta_op.tla_dist.aiv.c310.bc")
         mixed = self.write(build / "bc" / "meta_op.tla_dist.mix_aiv.c310.bc")
-        self.assertEqual(self.resolve("mix"), f"{aic},{mixed}")
+        mixed_aic = self.write(build / "bc" / "meta_op.mix_aic.c310.bc")
+        self.assertEqual(self.resolve("aic"), aic)
+        self.assertEqual(self.resolve("mix"), f"{mixed_aic},{mixed}")
         self.assertEqual(self.resolve("aiv"), aiv)
 
     def test_explicit_bitcode_override_is_preserved(self):
@@ -113,7 +128,11 @@ class BitcodeSelectionTests(unittest.TestCase):
         self.assertEqual(self.resolve("aic"), aic)
         self.assertEqual(self.resolve("aiv"), aiv)
         mixed = Path(self.write(bc / "meta_op.mix_aiv.c310.bc"))
+        self.write(bc / "meta_op.mix_aic.c310.bc")
         execution = SimpleNamespace(
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
+                runtime
+            ),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=None,
@@ -123,7 +142,9 @@ class BitcodeSelectionTests(unittest.TestCase):
         with self.scope["_catccos_execution_hooks"]():
 
             def key(mode):
-                return execution._cache_key(compile_option=Runtime(mode, f"{mode}.c310"), tlair_mlir="kernel")
+                return execution._cache_key(
+                    compile_option=Runtime(mode, f"{mode}.c310"), tlair_mlir="kernel"
+                )
 
             initial_aic = key("aic")
             initial_aiv = key("aiv")
@@ -133,10 +154,13 @@ class BitcodeSelectionTests(unittest.TestCase):
 
     def test_execution_hook_accepts_catlass_variant_keyword(self):
         bc = self.package / "bc"
-        aic = self.write(bc / "meta_op.aic.c310.bc")
+        aic = self.write(bc / "meta_op.mix_aic.c310.bc")
         mixed = self.write(bc / "meta_op.mix_aiv.c310.bc")
         original = object()
         execution = SimpleNamespace(
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
+                runtime
+            ),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=original,
@@ -157,6 +181,9 @@ class BitcodeSelectionTests(unittest.TestCase):
         explicit = self.write(self.root / "custom-print-with-shmem.bc")
         os.environ["TLA_DIST_DSL_BASE_BITCODE"] = explicit
         execution = SimpleNamespace(
+            _resolve_compile_option_from_lowered_mlir=lambda runtime, *args, **kwargs: (
+                runtime
+            ),
             _run_tla_lowering_to_mlir=None,
             resolve_bridge_extension_path=None,
             _resolve_hivm_template_bitcode=None,
@@ -165,7 +192,9 @@ class BitcodeSelectionTests(unittest.TestCase):
         self.scope["_execution"] = execution
         with self.scope["_catccos_execution_hooks"]():
             self.assertEqual(
-                execution._resolve_hivm_template_bitcode(Runtime("mix", "aic.c310"), variant="print"),
+                execution._resolve_hivm_template_bitcode(
+                    Runtime("mix", "aic.c310"), variant="print"
+                ),
                 explicit,
             )
 
